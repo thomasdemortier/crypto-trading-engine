@@ -50,11 +50,18 @@ def _output_path() -> Path:
     return config.RESULTS_DIR / OUTPUT_FILENAME
 
 
+def _utcnow_iso() -> str:
+    """Tiny indirection so tests can monkeypatch the wall-clock without
+    subclassing pandas' Cython `Timestamp` (subclassing is fragile across
+    pandas / Python versions — Python 3.12 + pandas 2.2+ refuses)."""
+    return pd.Timestamp.utcnow().isoformat()
+
+
 def _row_from_status(snap: bot_status.BotStatus) -> Dict[str, Any]:
     """Project the relevant fields out of `BotStatus`. Never carries
     raw key values — `api_keys_loaded` is a boolean flag only."""
     return {
-        "timestamp": pd.Timestamp.utcnow().isoformat(),
+        "timestamp": _utcnow_iso(),
         "bot_mode": snap.bot_mode,
         "execution_enabled": bool(snap.execution_enabled),
         "paper_trading_enabled": bool(snap.paper_trading_enabled),
