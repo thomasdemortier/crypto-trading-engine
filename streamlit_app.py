@@ -2747,6 +2747,339 @@ with st.container(border=True):
 
 
 # ---------------------------------------------------------------------------
+# Derivatives signals (Phase 7) — funding + OI research panel
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Derivatives signals</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>Funding rate + open interest research "
+        "from Binance Futures public endpoints. <b>Open interest history "
+        "is capped at ~30 days</b> by the public API; treat OI-derived "
+        "verdicts as INCONCLUSIVE on data length unless coverage allows "
+        "≥5 OOS windows.</div>",
+        unsafe_allow_html=True,
+    )
+
+    der_tabs = st.tabs([
+        "Coverage", "Signal table", "Equity vs benchmarks",
+        "Walk-forward", "Placebo", "Scorecard",
+    ])
+
+    der_cov = _research_csv("futures_data_coverage.csv")
+    der_sig = _research_csv("derivatives_signals.csv")
+    der_eq = _research_csv("derivatives_rotation_equity_curve.csv")
+    der_cmp = _research_csv("derivatives_rotation_comparison.csv")
+    der_wf = _research_csv("derivatives_walk_forward.csv")
+    der_plac = _research_csv("derivatives_placebo_comparison.csv")
+    der_sc = _research_csv("derivatives_scorecard.csv")
+
+    with der_tabs[0]:
+        if der_cov.empty:
+            st.info("No futures data yet. Run "
+                    "`python main.py download_futures_data`.")
+        else:
+            cols = [c for c in ["symbol", "dataset", "row_count",
+                                "actual_start", "actual_end",
+                                "coverage_days", "enough_for_research",
+                                "missing_reason", "notes"]
+                    if c in der_cov.columns]
+            st.dataframe(der_cov[cols], use_container_width=True,
+                         hide_index=True)
+            st.download_button(
+                "Download futures_data_coverage.csv",
+                _df_to_csv_bytes(der_cov),
+                file_name="futures_data_coverage.csv",
+                mime="text/csv", key="dl_futures_cov",
+            )
+
+    with der_tabs[1]:
+        if der_sig.empty:
+            st.info("No signal table yet. Run "
+                    "`python main.py derivatives_signals`.")
+        else:
+            n_rows = len(der_sig)
+            n_syms = der_sig["symbol"].nunique() if "symbol" in der_sig.columns else 0
+            st.markdown(
+                f"<div class='section-sub'><b>{n_rows} rows</b> across "
+                f"<b>{n_syms} symbols</b>.</div>",
+                unsafe_allow_html=True,
+            )
+            if "signal_state" in der_sig.columns:
+                dist = der_sig["signal_state"].value_counts(normalize=True) * 100
+                dist_df = (dist.rename("pct_of_rows")
+                           .reset_index().rename(columns={"index": "signal_state"}))
+                st.dataframe(dist_df, use_container_width=True, hide_index=True)
+            preview_cols = [c for c in ["timestamp", "symbol", "close",
+                            "return_30d", "funding_rate_zscore_90d",
+                            "open_interest_30d_change_pct",
+                            "crowding_score", "capitulation_score",
+                            "signal_state"]
+                            if c in der_sig.columns]
+            st.dataframe(der_sig[preview_cols].tail(200),
+                         use_container_width=True, hide_index=True,
+                         height=320)
+            st.download_button(
+                "Download derivatives_signals.csv",
+                _df_to_csv_bytes(der_sig),
+                file_name="derivatives_signals.csv",
+                mime="text/csv", key="dl_der_sig",
+            )
+
+    with der_tabs[2]:
+        if der_eq.empty:
+            st.info("No derivatives equity curve yet. Run "
+                    "`python main.py derivatives_rotation`.")
+        else:
+            try:
+                fig = plotting.equity_curve_fig(der_eq, float(starting_capital))
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.dataframe(der_eq.tail(50), use_container_width=True,
+                             hide_index=True)
+        if not der_cmp.empty:
+            st.dataframe(der_cmp, use_container_width=True, hide_index=True)
+
+    with der_tabs[3]:
+        if der_wf.empty:
+            st.info("No walk-forward results. Run "
+                    "`python main.py derivatives_walk_forward`. "
+                    "If OI coverage is <30 days, no windows will fit.")
+        else:
+            cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                    "oos_return_pct", "btc_oos_return_pct",
+                    "basket_oos_return_pct", "beats_btc", "beats_basket",
+                    "n_rebalances"] if c in der_wf.columns]
+            st.dataframe(der_wf[cols], use_container_width=True,
+                         hide_index=True)
+
+    with der_tabs[4]:
+        if der_plac.empty:
+            st.info("No placebo comparison yet. Run "
+                    "`python main.py derivatives_placebo`.")
+        else:
+            summary = der_plac.iloc[[0]] if len(der_plac) > 0 else pd.DataFrame()
+            if not summary.empty:
+                cols_s = [c for c in ["strategy_return_pct",
+                          "placebo_median_return_pct",
+                          "strategy_max_drawdown_pct",
+                          "placebo_median_drawdown_pct",
+                          "strategy_beats_median_return"]
+                          if c in summary.columns]
+                st.dataframe(summary[cols_s], use_container_width=True,
+                             hide_index=True)
+            seed_rows = (der_plac[der_plac["strategy"] == "placebo_seed_runs"]
+                         if "strategy" in der_plac.columns else pd.DataFrame())
+            if not seed_rows.empty:
+                st.dataframe(seed_rows[["seed", "placebo_return_pct",
+                                         "placebo_max_drawdown_pct",
+                                         "placebo_sharpe"]],
+                             use_container_width=True, hide_index=True,
+                             height=240)
+
+    with der_tabs[5]:
+        if der_sc.empty:
+            st.info("No scorecard yet. Run "
+                    "`python main.py derivatives_scorecard`.")
+        else:
+            row = der_sc.iloc[0]
+            verdict = str(row.get("verdict", "INCONCLUSIVE"))
+            color = {
+                "PASS": "#10b981", "WATCHLIST": "#f59e0b",
+                "FAIL": "#f43f5e", "INCONCLUSIVE": "#94a3b8",
+            }.get(verdict, "#94a3b8")
+            st.markdown(
+                f"<div style='padding:8px 12px;border-radius:8px;"
+                f"background:{color}22;color:{color};display:inline-block;"
+                f"font-weight:600'>Verdict: {verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            st.write({k: row.get(k) for k in [
+                "n_windows", "avg_oos_return_pct", "avg_oos_drawdown_pct",
+                "pct_windows_beat_btc", "pct_windows_beat_basket",
+                "stability_score_pct", "total_rebalances",
+                "beats_placebo_median", "checks_passed", "checks_total",
+                "reason"] if k in der_sc.columns})
+
+
+# ---------------------------------------------------------------------------
+# Funding signals — funding-only research (4-year funding history)
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Funding signals</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>Funding-only rotation. Uses ~4 years of "
+        "Binance Futures public funding history. <b>No open interest is "
+        "used here</b> — that experiment is in the Derivatives signals "
+        "card.</div>",
+        unsafe_allow_html=True,
+    )
+
+    fnd_tabs = st.tabs([
+        "Coverage", "Signal table", "By state", "Equity vs benchmarks",
+        "Walk-forward", "Placebo", "Scorecard",
+    ])
+
+    fnd_cov = _research_csv("futures_data_coverage.csv")
+    fnd_sig = _research_csv("funding_signals.csv")
+    fnd_eq = _research_csv("funding_rotation_equity_curve.csv")
+    fnd_cmp = _research_csv("funding_rotation_comparison.csv")
+    fnd_wf = _research_csv("funding_walk_forward.csv")
+    fnd_plac = _research_csv("funding_placebo_comparison.csv")
+    fnd_sc = _research_csv("funding_scorecard.csv")
+
+    with fnd_tabs[0]:
+        if fnd_cov.empty:
+            st.info("No futures data yet. Run "
+                    "`python main.py download_futures_data`.")
+        else:
+            funding_only = (fnd_cov[fnd_cov["dataset"] == "funding_rates"]
+                             if "dataset" in fnd_cov.columns else fnd_cov)
+            cols = [c for c in ["symbol", "row_count", "actual_start",
+                                 "actual_end", "coverage_days",
+                                 "enough_for_research", "notes"]
+                    if c in funding_only.columns]
+            st.dataframe(funding_only[cols], use_container_width=True,
+                          hide_index=True)
+
+    with fnd_tabs[1]:
+        if fnd_sig.empty:
+            st.info("No signal table yet. Run "
+                    "`python main.py funding_signals`.")
+        else:
+            preview_cols = [c for c in ["timestamp", "symbol", "close",
+                            "return_30d", "funding_30d_mean",
+                            "funding_90d_zscore", "funding_trend",
+                            "funding_state"]
+                            if c in fnd_sig.columns]
+            st.dataframe(fnd_sig[preview_cols].tail(200),
+                          use_container_width=True, hide_index=True,
+                          height=320)
+            st.download_button(
+                "Download funding_signals.csv",
+                _df_to_csv_bytes(fnd_sig),
+                file_name="funding_signals.csv",
+                mime="text/csv", key="dl_fnd_sig",
+            )
+
+    with fnd_tabs[2]:
+        if fnd_sig.empty or "funding_state" not in fnd_sig.columns:
+            st.info("No funding state data yet.")
+        else:
+            latest = (fnd_sig.sort_values("timestamp")
+                      .groupby("symbol", as_index=False).tail(1)
+                      [["symbol", "funding_state",
+                        "funding_90d_zscore", "return_30d"]])
+            st.markdown("**Current funding state by asset:**")
+            st.dataframe(latest, use_container_width=True, hide_index=True)
+            crowded = latest[latest["funding_state"] == "crowded_long"]
+            capit = latest[latest["funding_state"] == "capitulation"]
+            cols_s = st.columns(2)
+            with cols_s[0]:
+                st.markdown("**Crowded longs (excluded):**")
+                if crowded.empty:
+                    st.caption("none")
+                else:
+                    st.dataframe(crowded[["symbol",
+                                            "funding_90d_zscore",
+                                            "return_30d"]],
+                                  use_container_width=True, hide_index=True)
+            with cols_s[1]:
+                st.markdown("**Capitulation:**")
+                if capit.empty:
+                    st.caption("none")
+                else:
+                    st.dataframe(capit[["symbol", "funding_90d_zscore",
+                                          "return_30d"]],
+                                  use_container_width=True, hide_index=True)
+
+    with fnd_tabs[3]:
+        if fnd_eq.empty:
+            st.info("No funding equity curve yet. Run "
+                    "`python main.py funding_rotation`.")
+        else:
+            try:
+                fig = plotting.equity_curve_fig(fnd_eq, float(starting_capital))
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.dataframe(fnd_eq.tail(50), use_container_width=True,
+                              hide_index=True)
+        if not fnd_cmp.empty:
+            st.dataframe(fnd_cmp, use_container_width=True, hide_index=True)
+
+    with fnd_tabs[4]:
+        if fnd_wf.empty:
+            st.info("No walk-forward results. Run "
+                    "`python main.py funding_walk_forward`.")
+        else:
+            cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                    "oos_return_pct", "btc_oos_return_pct",
+                    "basket_oos_return_pct", "simple_oos_return_pct",
+                    "beats_btc", "beats_basket", "beats_simple_momentum",
+                    "n_rebalances"] if c in fnd_wf.columns]
+            st.dataframe(fnd_wf[cols], use_container_width=True,
+                          hide_index=True)
+
+    with fnd_tabs[5]:
+        if fnd_plac.empty:
+            st.info("No placebo comparison yet. Run "
+                    "`python main.py funding_placebo`.")
+        else:
+            summary = fnd_plac.iloc[[0]] if len(fnd_plac) > 0 else pd.DataFrame()
+            if not summary.empty:
+                cols_s = [c for c in ["strategy_return_pct",
+                          "placebo_median_return_pct",
+                          "strategy_max_drawdown_pct",
+                          "placebo_median_drawdown_pct",
+                          "strategy_beats_median_return"]
+                          if c in summary.columns]
+                st.dataframe(summary[cols_s], use_container_width=True,
+                              hide_index=True)
+            seed_rows = (fnd_plac[fnd_plac["strategy"] == "placebo_seed_runs"]
+                          if "strategy" in fnd_plac.columns else pd.DataFrame())
+            if not seed_rows.empty:
+                st.dataframe(seed_rows[["seed", "placebo_return_pct",
+                                          "placebo_max_drawdown_pct",
+                                          "placebo_sharpe"]],
+                              use_container_width=True, hide_index=True,
+                              height=240)
+
+    with fnd_tabs[6]:
+        if fnd_sc.empty:
+            st.info("No scorecard yet. Run "
+                    "`python main.py funding_scorecard`.")
+        else:
+            row = fnd_sc.iloc[0]
+            verdict = str(row.get("verdict", "INCONCLUSIVE"))
+            color = {
+                "PASS": "#10b981", "WATCHLIST": "#f59e0b",
+                "FAIL": "#f43f5e", "INCONCLUSIVE": "#94a3b8",
+            }.get(verdict, "#94a3b8")
+            st.markdown(
+                f"<div style='padding:8px 12px;border-radius:8px;"
+                f"background:{color}22;color:{color};display:inline-block;"
+                f"font-weight:600'>Verdict: {verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            st.write({k: row.get(k) for k in [
+                "n_windows", "avg_oos_return_pct", "avg_oos_drawdown_pct",
+                "pct_windows_beat_btc", "pct_windows_beat_basket",
+                "pct_windows_beat_simple_momentum",
+                "stability_score_pct", "total_rebalances",
+                "strategy_full_drawdown_pct", "btc_full_drawdown_pct",
+                "dd_gap_pp", "beats_placebo_median",
+                "checks_passed", "checks_total",
+                "reason"] if k in fnd_sc.columns})
+
+
+# ---------------------------------------------------------------------------
 # Paper-trader state + risk dashboard
 # ---------------------------------------------------------------------------
 paper_state = paper_trader.get_state_for_display()

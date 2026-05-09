@@ -23,6 +23,7 @@ env/
 # Cached data and runtime artifacts
 data/raw/*.csv
 data/processed/*.csv
+data/futures/**/*.csv
 logs/*.csv
 results/*.csv
 results/*.json

@@ -39,8 +39,10 @@ from pathlib import Path
 import pandas as pd
 
 from src import (
-    backtester, config, crypto_regime_signals, data_collector, oos_audit,
-    paper_trader, performance, portfolio_audit, portfolio_research,
+    backtester, config, crypto_regime_signals, data_collector,
+    derivatives_research, derivatives_signals, funding_research,
+    funding_signals, futures_data_collector,
+    oos_audit, paper_trader, performance, portfolio_audit, portfolio_research,
     research, utils,
 )
 
@@ -738,6 +740,265 @@ def cmd_kronos_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Derivatives (Phase 8) — futures funding + open-interest research
+# ---------------------------------------------------------------------------
+DERIVATIVES_DEFAULT_SYMBOLS = list(futures_data_collector.DEFAULT_FUTURES_SYMBOLS)
+
+
+def cmd_download_futures_data(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    res = futures_data_collector.download_futures_data(
+        symbols=args.symbols, days=args.days, refresh=args.refresh,
+    )
+    cov = res["coverage_df"]
+    print(f"download_futures_data: {len(res['funding_paths'])} funding files, "
+          f"{len(res['oi_paths'])} OI files, {len(res['missing'])} missing.")
+    if not cov.empty:
+        cols = [c for c in ["symbol", "dataset", "row_count",
+                            "coverage_days", "enough_for_research", "notes"]
+                if c in cov.columns]
+        print(cov[cols].to_string(index=False))
+    print("\nSaved → results/futures_data_coverage.csv")
+    return 0
+
+
+def cmd_derivatives_signals(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = derivatives_signals.compute_all_derivatives_signals(
+        symbols=args.symbols, save=True,
+    )
+    if df.empty:
+        print("derivatives_signals: no rows produced (missing inputs?).")
+        return 1
+    by_state = df["signal_state"].value_counts().to_dict()
+    print(f"derivatives_signals: {len(df)} rows across "
+          f"{df['symbol'].nunique()} symbols.")
+    print(f"  state distribution: {by_state}")
+    print("\nSaved → results/derivatives_signals.csv")
+    return 0
+
+
+def cmd_derivatives_rotation(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = derivatives_research.run_derivatives_rotation(
+        symbols=args.symbols, timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"derivatives_rotation: {out.get('reason')}")
+        return 1
+    print("\n=== derivatives rotation vs benchmarks ===")
+    _print_portfolio_metrics_dict("derivatives_rotation", out["metrics"])
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/derivatives_rotation_*.csv")
+    return 0
+
+
+def cmd_derivatives_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = derivatives_research.derivatives_walk_forward(
+        symbols=args.symbols, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days,
+    )
+    if df.empty:
+        print("derivatives_walk_forward: no windows fit the available history.")
+        return 1
+    cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                         "oos_return_pct", "oos_max_drawdown_pct",
+                         "btc_oos_return_pct", "basket_oos_return_pct",
+                         "beats_btc", "beats_basket", "n_rebalances"]
+            if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/derivatives_walk_forward.csv ({len(df)} windows).")
+    return 0
+
+
+def cmd_derivatives_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = derivatives_research.derivatives_placebo(
+        symbols=args.symbols, timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("derivatives_placebo: no rows.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== derivatives placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown"):
+        if k in summary:
+            print(f"  {k:<35} {summary[k]}")
+    print(f"\nSaved → results/derivatives_placebo_comparison.csv "
+          f"({args.n_seeds} seeds).")
+    return 0
+
+
+def cmd_derivatives_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = derivatives_research.derivatives_scorecard()
+    if df.empty:
+        print("derivatives_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== derivatives scorecard ===")
+    for k in ("strategy_name", "n_windows", "verdict",
+              "avg_oos_return_pct", "avg_oos_drawdown_pct",
+              "pct_windows_beat_btc", "pct_windows_beat_basket",
+              "stability_score_pct", "total_rebalances",
+              "beats_placebo_median", "checks_passed", "checks_total",
+              "reason"):
+        if k in row:
+            print(f"  {k:<30} {row[k]}")
+    print("\nSaved → results/derivatives_scorecard.csv")
+    return 0
+
+
+def cmd_research_all_derivatives(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = derivatives_research.run_all_derivatives(
+        symbols=args.symbols, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, seeds=tuple(range(args.n_seeds)),
+    )
+    sc = out.get("scorecard")
+    if sc is None or sc.empty:
+        print("research_all_derivatives: scorecard empty.")
+        return 1
+    row = sc.iloc[0].to_dict()
+    print("\n=== research_all_derivatives FINAL ===")
+    print(f"  verdict:       {row.get('verdict')}")
+    print(f"  reason:        {row.get('reason')}")
+    print(f"  n_windows:     {row.get('n_windows')}")
+    print(f"  beats_placebo: {row.get('beats_placebo_median')}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Funding-only research (separate from the funding+OI experiment)
+# ---------------------------------------------------------------------------
+FUNDING_DEFAULT_SYMBOLS = list(funding_research.DEFAULT_FUNDING_SYMBOLS)
+
+
+def cmd_funding_signals(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_signals.compute_all_funding_signals(
+        symbols=args.symbols, save=True,
+    )
+    if df.empty:
+        print("funding_signals: no rows produced.")
+        return 1
+    by_state = df["funding_state"].value_counts().to_dict()
+    print(f"funding_signals: {len(df)} rows, "
+          f"{df['symbol'].nunique()} symbols.")
+    print(f"  state distribution: {by_state}")
+    print("\nSaved → results/funding_signals.csv")
+    return 0
+
+
+def cmd_funding_rotation(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = funding_research.run_funding_rotation(
+        symbols=args.symbols, timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"funding_rotation: {out.get('reason')}")
+        return 1
+    print("\n=== funding rotation vs benchmarks ===")
+    _print_portfolio_metrics_dict("funding_rotation", out["metrics"])
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/funding_rotation_*.csv")
+    return 0
+
+
+def cmd_funding_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_research.funding_walk_forward(
+        symbols=args.symbols, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days,
+    )
+    if df.empty:
+        print("funding_walk_forward: no windows fit available history.")
+        return 1
+    cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                         "oos_return_pct", "btc_oos_return_pct",
+                         "basket_oos_return_pct", "simple_oos_return_pct",
+                         "beats_btc", "beats_basket", "beats_simple_momentum",
+                         "n_rebalances"] if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/funding_walk_forward.csv ({len(df)} windows).")
+    return 0
+
+
+def cmd_funding_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_research.funding_placebo(
+        symbols=args.symbols, timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("funding_placebo: no rows.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== funding placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown"):
+        if k in summary:
+            print(f"  {k:<35} {summary[k]}")
+    print(f"\nSaved → results/funding_placebo_comparison.csv "
+          f"({args.n_seeds} seeds).")
+    return 0
+
+
+def cmd_funding_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_research.funding_scorecard()
+    if df.empty:
+        print("funding_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== funding scorecard ===")
+    for k in ("strategy_name", "n_windows", "verdict",
+              "avg_oos_return_pct", "avg_oos_drawdown_pct",
+              "pct_windows_beat_btc", "pct_windows_beat_basket",
+              "pct_windows_beat_simple_momentum",
+              "stability_score_pct", "total_rebalances",
+              "strategy_full_drawdown_pct", "btc_full_drawdown_pct",
+              "dd_gap_pp", "beats_placebo_median",
+              "checks_passed", "checks_total", "reason"):
+        if k in row:
+            print(f"  {k:<32} {row[k]}")
+    print("\nSaved → results/funding_scorecard.csv")
+    return 0
+
+
+def cmd_research_all_funding(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = funding_research.run_all_funding(
+        symbols=args.symbols, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, seeds=tuple(range(args.n_seeds)),
+    )
+    sc = out.get("scorecard")
+    if sc is None or sc.empty:
+        print("research_all_funding: scorecard empty.")
+        return 1
+    row = sc.iloc[0].to_dict()
+    print("\n=== research_all_funding FINAL ===")
+    print(f"  verdict:       {row.get('verdict')}")
+    print(f"  reason:        {row.get('reason')}")
+    print(f"  n_windows:     {row.get('n_windows')}")
+    print(f"  beats_placebo: {row.get('beats_placebo_median')}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="crypto_trading_engine",
                                 description="Research-only BTC/ETH backtester.")
@@ -973,6 +1234,119 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    # ----- Derivatives research (Phase 8) ----------------------------------
+    sp = sub.add_parser("download_futures_data",
+                        help="Download Binance Futures funding + OI history "
+                             "(public endpoints only).")
+    sp.add_argument("--symbols", nargs="+",
+                    default=DERIVATIVES_DEFAULT_SYMBOLS)
+    sp.add_argument("--days", type=int, default=1460)
+    sp.add_argument("--refresh", action="store_true")
+    sp.set_defaults(func=cmd_download_futures_data)
+
+    sp = sub.add_parser("derivatives_signals",
+                        help="Compute funding + OI signal features and "
+                             "save results/derivatives_signals.csv.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=DERIVATIVES_DEFAULT_SYMBOLS)
+    sp.set_defaults(func=cmd_derivatives_signals)
+
+    sp = sub.add_parser("derivatives_rotation",
+                        help="Single-window derivatives-aware rotation backtest.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=DERIVATIVES_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.set_defaults(func=cmd_derivatives_rotation)
+
+    sp = sub.add_parser("derivatives_walk_forward",
+                        help="Walk-forward the derivatives rotation strategy.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=DERIVATIVES_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.set_defaults(func=cmd_derivatives_walk_forward)
+
+    sp = sub.add_parser("derivatives_placebo",
+                        help="Compare derivatives rotation vs random-rotation "
+                             "placebo across N seeds.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=DERIVATIVES_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_derivatives_placebo)
+
+    sp = sub.add_parser("derivatives_scorecard",
+                        help="Build derivatives scorecard from saved CSVs.")
+    sp.set_defaults(func=cmd_derivatives_scorecard)
+
+    sp = sub.add_parser("research_all_derivatives",
+                        help="Run derivatives signals + rotation + walk-forward "
+                             "+ placebo + scorecard end to end.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=DERIVATIVES_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_research_all_derivatives)
+
+    # ----- Funding-only research (4-year funding history) -----------------
+    sp = sub.add_parser("funding_signals",
+                        help="Compute funding-only signal features and "
+                             "save results/funding_signals.csv.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=FUNDING_DEFAULT_SYMBOLS)
+    sp.set_defaults(func=cmd_funding_signals)
+
+    sp = sub.add_parser("funding_rotation",
+                        help="Single-window funding-only rotation backtest.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=FUNDING_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.set_defaults(func=cmd_funding_rotation)
+
+    sp = sub.add_parser("funding_walk_forward",
+                        help="Walk-forward the funding rotation strategy.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=FUNDING_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.set_defaults(func=cmd_funding_walk_forward)
+
+    sp = sub.add_parser("funding_placebo",
+                        help="Compare funding rotation vs random-rotation "
+                             "placebo across N seeds.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=FUNDING_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_funding_placebo)
+
+    sp = sub.add_parser("funding_scorecard",
+                        help="Build funding scorecard from saved CSVs.")
+    sp.set_defaults(func=cmd_funding_scorecard)
+
+    sp = sub.add_parser("research_all_funding",
+                        help="Run funding signals + rotation + walk-forward "
+                             "+ placebo + scorecard end to end.")
+    sp.add_argument("--symbols", nargs="+",
+                    default=FUNDING_DEFAULT_SYMBOLS)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_research_all_funding)
 
     sp = sub.add_parser("audit_oos",
                         help="Audit walk-forward window mechanics.")

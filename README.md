@@ -17,7 +17,30 @@ A research-only backtesting and paper-trading engine for **BTC/USDT** and **ETH/
 - **BTC buy-and-hold remains the strongest practical baseline.**
 - Future work should use **new signal classes** (funding, on-chain flows, sentiment, real BTC dominance), not further tweaking of price-based TA on the same universe.
 
-For the full evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+For the full v1 evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+
+### Branch experiment: `research/new-signal-class` (funding + OI)
+
+After v1 closed we tried the first new signal class proposed in the
+report — funding rates + open interest from Binance Futures public
+endpoints. **Verdict: INCONCLUSIVE on data length** (mechanical
+scorecard reads FAIL because the strategy never traded). Public Binance
+OI history is capped at ~30 days, so `open_interest_30d_change_pct` is
+undefined and every signal classifies as `unknown`. Funding history goes
+back ~4 years; an OI-independent funding-only experiment is the
+suggested next step. Full report:
+[`reports/derivatives_research_report.md`](reports/derivatives_research_report.md).
+
+### Branch experiment: funding-only rotation (4-year funding history)
+
+Funding-only follow-up — uses the full ~4 years of Binance Futures
+funding history with no OI dependency. **Verdict: FAIL** (4 of 8
+scorecard checks satisfied). Funding-rotation produced +37 % return vs
+BTC's +176 %, lost to BTC, basket, AND simple momentum rotation in the
+majority of OOS windows, and only 14 % stability vs the 60 % threshold.
+It did beat the random Top-3 placebo, but the spec is explicit that
+beating placebo alone is not enough. Full report:
+[`reports/funding_research_report.md`](reports/funding_research_report.md).
 
 **Latest measured results** (1459 days of BTC + ETH 1h / 4h / 1d, plus 8 alts at 1d):
 
