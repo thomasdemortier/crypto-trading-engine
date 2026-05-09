@@ -27,11 +27,22 @@ import numpy as np
 import pandas as pd
 
 from . import backtester, config, data_collector, performance, utils
+from . import regime as _regime
+from . import scorecard as _scorecard
 from .strategies import (
     BreakoutStrategy, BuyAndHoldStrategy,
     MovingAverageCrossStrategy, RsiMaAtrStrategy,
+    TrendFollowingStrategy, PullbackContinuationStrategy,
+    SidewaysMeanReversionStrategy, RegimeSelectorStrategy,
+    PlaceboRandomStrategy, PLACEBOS, BENCHMARKS,
 )
 from .strategies.base import Strategy
+from .strategies.regime_filtered import RegimeFilteredStrategy
+from .strategies.regime_selector import RegimeSelectorConfig
+from .strategies.breakout import BreakoutConfig
+from .strategies.trend_following import TrendFollowingConfig
+from .strategies.pullback_continuation import PullbackContinuationConfig
+from .strategies.sideways_mean_reversion import SidewaysMeanReversionConfig
 
 logger = utils.get_logger("cte.research")
 
@@ -101,7 +112,9 @@ def _metrics_row(asset: str, timeframe: str, label: str,
         "asset": asset, "timeframe": timeframe, "label": label,
         "total_return_pct": m.total_return_pct,
         "buy_and_hold_return_pct": m.buy_and_hold_return_pct,
+        "buy_and_hold_max_drawdown_pct": m.buy_and_hold_max_drawdown_pct,
         "strategy_vs_bh_pct": m.strategy_vs_bh_pct,
+        "drawdown_vs_bh_pct": m.drawdown_vs_bh_pct,
         "max_drawdown_pct": m.max_drawdown_pct,
         "win_rate_pct": m.win_rate_pct,
         "num_trades": int(m.num_trades),
@@ -316,6 +329,270 @@ def _iso(ts_ms: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2b — Per-strategy walk-forward
+# ---------------------------------------------------------------------------
+def placebo_comparison(
+    wf_by_strategy_df: Optional[pd.DataFrame] = None,
+    save: bool = True,
+) -> pd.DataFrame:
+    """Per (strategy, asset, timeframe) compare OOS stability + mean OOS
+    return against the placebo. A strategy "beats placebo" only if it has
+    BOTH a higher stability score AND a higher mean OOS return.
+
+    If trade count is too low we mark the comparison INCONCLUSIVE rather
+    than letting an under-traded strategy spuriously win.
+    """
+    if wf_by_strategy_df is None:
+        p = config.RESULTS_DIR / "walk_forward_by_strategy.csv"
+        if not p.exists() or p.stat().st_size == 0:
+            empty = pd.DataFrame()
+            if save:
+                utils.write_df(empty, config.RESULTS_DIR / "placebo_comparison.csv")
+            return empty
+        wf_by_strategy_df = pd.read_csv(p)
+
+    df = wf_by_strategy_df.copy()
+    if "strategy_name" not in df.columns:
+        empty = pd.DataFrame()
+        if save:
+            utils.write_df(empty, config.RESULTS_DIR / "placebo_comparison.csv")
+        return empty
+    if "error" in df.columns:
+        df = df[df["error"].isna()]
+    if df.empty:
+        empty = pd.DataFrame()
+        if save:
+            utils.write_df(empty, config.RESULTS_DIR / "placebo_comparison.csv")
+        return empty
+
+    # Compute per-(strategy, asset, tf) aggregates.
+    def _agg(group: pd.DataFrame) -> Dict[str, float]:
+        n = len(group)
+        if n == 0:
+            return {"stability_pct": 0.0, "mean_return_pct": 0.0,
+                    "mean_trades": 0.0, "n_windows": 0}
+        n_both = int(((group["strategy_return_pct"] > 0)
+                      & (group["strategy_vs_bh_pct"] > 0)).sum())
+        return {
+            "stability_pct": (n_both / n * 100.0),
+            "mean_return_pct": float(group["strategy_return_pct"].mean()),
+            "mean_trades": float(group["num_trades"].mean()),
+            "n_windows": n,
+        }
+
+    aggs = {
+        keys: _agg(grp) for keys, grp in
+        df.groupby(["strategy_name", "asset", "timeframe"], dropna=False)
+    }
+    placebo_aggs = {
+        (a, t): v for (s, a, t), v in aggs.items() if s in PLACEBOS
+    }
+
+    rows = []
+    for (strat, asset, tf), agg in aggs.items():
+        if strat in PLACEBOS or strat in BENCHMARKS:
+            continue
+        plac = placebo_aggs.get((asset, tf))
+        if plac is None:
+            rows.append({
+                "strategy_name": strat, "asset": asset, "timeframe": tf,
+                "strategy_oos_stability": agg["stability_pct"],
+                "placebo_oos_stability": None,
+                "strategy_mean_oos_return": agg["mean_return_pct"],
+                "placebo_mean_oos_return": None,
+                "strategy_mean_trades": agg["mean_trades"],
+                "placebo_mean_trades": None,
+                "strategy_beats_placebo": False,
+                "notes": "no placebo OOS rows for this (asset, timeframe)",
+            })
+            continue
+        # Conservative threshold — the strategy must beat placebo on BOTH
+        # stability AND mean OOS return to count.
+        if agg["mean_trades"] < 3.0:
+            verdict = False
+            note = (f"INCONCLUSIVE — only {agg['mean_trades']:.1f} mean "
+                    f"trades per window")
+        else:
+            beats_stab = agg["stability_pct"] > plac["stability_pct"]
+            beats_ret = agg["mean_return_pct"] > plac["mean_return_pct"]
+            verdict = bool(beats_stab and beats_ret)
+            if verdict:
+                note = "beats placebo on both stability and mean return"
+            elif not beats_stab and not beats_ret:
+                note = "does NOT beat placebo on either metric — likely no signal"
+            elif beats_stab:
+                note = "beats placebo stability but not mean return"
+            else:
+                note = "beats placebo mean return but not stability"
+        rows.append({
+            "strategy_name": strat, "asset": asset, "timeframe": tf,
+            "strategy_oos_stability": agg["stability_pct"],
+            "placebo_oos_stability": plac["stability_pct"],
+            "strategy_mean_oos_return": agg["mean_return_pct"],
+            "placebo_mean_oos_return": plac["mean_return_pct"],
+            "strategy_mean_trades": agg["mean_trades"],
+            "placebo_mean_trades": plac["mean_trades"],
+            "strategy_beats_placebo": verdict,
+            "notes": note,
+        })
+    out = (pd.DataFrame(rows)
+           .sort_values(["strategy_name", "asset", "timeframe"])
+           if rows else pd.DataFrame())
+    if save:
+        utils.write_df(out, config.RESULTS_DIR / "placebo_comparison.csv")
+    return out
+
+
+def data_coverage_audit(
+    assets: Sequence[str] = ("BTC/USDT", "ETH/USDT"),
+    timeframes: Sequence[str] = ("1h", "4h", "1d"),
+    requested_lookback_days: Optional[int] = None,
+    save: bool = True,
+) -> pd.DataFrame:
+    """Audit cached candle coverage. Reports per (asset, timeframe):
+    actual_start, actual_end, candle_count, coverage_days,
+    enough_for_walk_forward (≥ 120 days = IS + OOS)."""
+    rows: List[Dict] = []
+    for asset in assets:
+        for tf in timeframes:
+            try:
+                candles = data_collector.load_candles(asset, tf)
+            except FileNotFoundError as e:
+                rows.append({
+                    "asset": asset, "timeframe": tf,
+                    "requested_start": None, "actual_start": None,
+                    "actual_end": None, "candle_count": 0,
+                    "coverage_days": 0.0,
+                    "enough_for_walk_forward": False,
+                    "requested_lookback_days": requested_lookback_days,
+                    "notes": f"missing data: {e}",
+                })
+                continue
+            if candles.empty:
+                rows.append({
+                    "asset": asset, "timeframe": tf,
+                    "requested_start": None, "actual_start": None,
+                    "actual_end": None, "candle_count": 0,
+                    "coverage_days": 0.0,
+                    "enough_for_walk_forward": False,
+                    "requested_lookback_days": requested_lookback_days,
+                    "notes": "empty candle file",
+                })
+                continue
+            start = pd.to_datetime(candles["datetime"].iloc[0], utc=True,
+                                   errors="coerce")
+            end = pd.to_datetime(candles["datetime"].iloc[-1], utc=True,
+                                 errors="coerce")
+            coverage_days = (
+                float((end - start).total_seconds() / 86400.0)
+                if pd.notna(start) and pd.notna(end) else 0.0
+            )
+            enough = coverage_days >= 120.0
+            gap_info = data_collector.validate_gaps(candles, tf)
+            note_parts = []
+            if requested_lookback_days is not None:
+                requested_start = (pd.Timestamp.now(tz="UTC")
+                                   - pd.Timedelta(days=requested_lookback_days))
+                if pd.notna(start) and start > requested_start + pd.Timedelta(days=2):
+                    note_parts.append(
+                        f"only {coverage_days:.0f} days available — "
+                        f"requested {requested_lookback_days}"
+                    )
+            else:
+                requested_start = None
+            if not enough:
+                note_parts.append("insufficient for 90/30 walk-forward")
+            if gap_info["gap_count"] > 0:
+                note_parts.append(
+                    f"{gap_info['gap_count']} gap(s); largest "
+                    f"{gap_info['largest_gap_bars']} bars"
+                )
+            rows.append({
+                "asset": asset, "timeframe": tf,
+                "requested_start": (str(requested_start)
+                                    if requested_start is not None else None),
+                "actual_start": str(start), "actual_end": str(end),
+                "candle_count": int(len(candles)),
+                "expected_bars": gap_info["expected_bars"],
+                "gap_count": gap_info["gap_count"],
+                "largest_gap_bars": gap_info["largest_gap_bars"],
+                "coverage_days": coverage_days,
+                "enough_for_walk_forward": enough,
+                "requested_lookback_days": requested_lookback_days,
+                "notes": "; ".join(note_parts) if note_parts else "ok",
+            })
+    out = pd.DataFrame(rows)
+    if save:
+        utils.write_df(out, config.RESULTS_DIR / "data_coverage.csv")
+    return out
+
+
+def _wf_strategies_default() -> List[Tuple[str, Strategy]]:
+    """Strategies the per-strategy walk-forward runs by default. We exclude
+    `buy_and_hold` (benchmark — its OOS path is trivially correlated with
+    the OOS B&H benchmark) but INCLUDE `placebo_random` so the audit can
+    compare every tradable strategy against the random baseline."""
+    return [
+        ("rsi_ma_atr", RsiMaAtrStrategy()),
+        ("ma_cross", MovingAverageCrossStrategy()),
+        ("breakout", BreakoutStrategy()),
+        ("trend_following", TrendFollowingStrategy()),
+        ("pullback_continuation", PullbackContinuationStrategy()),
+        ("sideways_mean_reversion", SidewaysMeanReversionStrategy()),
+        ("regime_selector", RegimeSelectorStrategy()),
+        ("placebo_random", PlaceboRandomStrategy()),
+    ]
+
+
+def walk_forward_by_strategy(
+    strategies: Optional[Sequence[Tuple[str, Strategy]]] = None,
+    assets: Sequence[str] = ("BTC/USDT", "ETH/USDT"),
+    timeframes: Sequence[str] = ("1h", "4h", "1d"),
+    in_sample_days: int = 90,
+    oos_days: int = 30,
+    step_days: int = 30,
+    risk_cfg: Optional[config.RiskConfig] = None,
+    strat_cfg: Optional[config.StrategyConfig] = None,
+    save: bool = True,
+) -> pd.DataFrame:
+    """Run walk-forward for EACH strategy independently. Saves
+    `results/walk_forward_by_strategy.csv` with a `strategy_name` column
+    so the scorecard can look up per-strategy OOS stability without
+    reusing one strategy's WF as a proxy for another.
+    """
+    utils.assert_paper_only()
+    strategies = list(strategies or _wf_strategies_default())
+    total = len(strategies)
+    frames: List[pd.DataFrame] = []
+    for idx, (name, strat) in enumerate(strategies, start=1):
+        logger.info(
+            "walk_forward_by_strategy [%d/%d] %s on %s × %s",
+            idx, total, name, list(assets), list(timeframes),
+        )
+        try:
+            df = walk_forward(
+                assets=assets, timeframes=timeframes,
+                in_sample_days=in_sample_days, oos_days=oos_days,
+                step_days=step_days,
+                strategy=strat, risk_cfg=risk_cfg, strat_cfg=strat_cfg,
+                save=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            df = pd.DataFrame([{
+                "asset": "—", "timeframe": "—", "window": 0,
+                "error": f"walk_forward failed: {type(e).__name__}: {e}",
+            }])
+        df = df.copy()
+        df["strategy_name"] = name
+        frames.append(df)
+    out = (pd.concat(frames, ignore_index=True)
+           if frames else pd.DataFrame())
+    if save:
+        utils.write_df(out, config.RESULTS_DIR / "walk_forward_by_strategy.csv")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 — Strategy comparison
 # ---------------------------------------------------------------------------
 def strategy_comparison(
@@ -335,11 +612,31 @@ def strategy_comparison(
             BuyAndHoldStrategy(),
             MovingAverageCrossStrategy(fast=50, slow=200),
             BreakoutStrategy(entry_window=20, exit_window=10),
+            TrendFollowingStrategy(),
+            PullbackContinuationStrategy(),
+            SidewaysMeanReversionStrategy(),
+            # Regime-filtered variants — same base strategies through the
+            # bear-trend defensive filter. NOT crowned as winners; just
+            # measured.
+            RegimeFilteredStrategy(RsiMaAtrStrategy()),
+            RegimeFilteredStrategy(TrendFollowingStrategy()),
+            # Regime-conditional selector: trend_following in bull/low-vol,
+            # sideways_mean_reversion in sideways/low-vol, cash otherwise.
+            RegimeSelectorStrategy(),
+            # Statistical control — random entries, fixed seed. NEVER tradable.
+            PlaceboRandomStrategy(),
         ]
     rows: List[Dict] = []
+    total = len(strategies) * len(assets) * len(timeframes)
+    counter = 0
     for strat in strategies:
         for asset in assets:
             for tf in timeframes:
+                counter += 1
+                logger.info(
+                    "strategy_comparison [%d/%d] %s on %s %s",
+                    counter, total, strat.name, asset, tf,
+                )
                 metrics, err, _ = _safe_run(
                     strategy=strat, asset=asset, timeframe=tf,
                     risk_cfg=risk_cfg, strat_cfg=strat_cfg,
@@ -399,12 +696,114 @@ def _ma_variants() -> List[Tuple[str, Strategy]]:
 
 
 def _breakout_variants() -> List[Tuple[str, Strategy]]:
+    """Small grid (also kept for the legacy `robustness_results.csv`).
+    Used as a quick fragility check, not as a parameter optimiser."""
     out: List[Tuple[str, Strategy]] = []
     for entry in (20, 50):
         for exit_ in (10, 20):
             label = f"entry={entry}|exit={exit_}"
             out.append((label, BreakoutStrategy(entry_window=entry,
                                                 exit_window=exit_)))
+    return out
+
+
+def _breakout_variants_extended() -> List[Tuple[str, Strategy]]:
+    """Extended grid for `robustness_by_strategy.csv`. Same fragility-test
+    intent — never used to crown a winner."""
+    out: List[Tuple[str, Strategy]] = []
+    for entry in (20, 30, 50):
+        for exit_ in (10, 15, 20):
+            for vol_w in (20, 30):
+                for max_atr in (4.0, 5.0, 6.0):
+                    cfg = BreakoutConfig(
+                        entry_window=entry, exit_window=exit_,
+                        volume_ma_window=vol_w, max_atr_pct=max_atr,
+                    )
+                    label = (f"entry={entry}|exit={exit_}|"
+                             f"vol_w={vol_w}|max_atr={max_atr}")
+                    out.append((label, BreakoutStrategy(cfg=cfg)))
+    return out
+
+
+def _trend_following_variants() -> List[Tuple[str, Strategy]]:
+    out: List[Tuple[str, Strategy]] = []
+    for fast in (20, 30):
+        for mid in (50, 75):
+            for slow in (150, 200):
+                for rsi_rec in (35, 40, 45):
+                    cfg = TrendFollowingConfig(
+                        fast_ma=fast, mid_ma=mid, slow_ma=slow,
+                        rsi_recovery_level=float(rsi_rec),
+                    )
+                    label = (f"fast={fast}|mid={mid}|slow={slow}|"
+                             f"rsi_rec={rsi_rec}")
+                    out.append((label, TrendFollowingStrategy(cfg=cfg)))
+    return out
+
+
+def _pullback_variants() -> List[Tuple[str, Strategy]]:
+    out: List[Tuple[str, Strategy]] = []
+    for pb_ma in (20, 50):
+        for rsi_min in (30, 35, 40):
+            for rsi_max in (50, 55, 60):
+                if rsi_min >= rsi_max:
+                    continue
+                for max_atr in (4.0, 5.0, 6.0):
+                    cfg = PullbackContinuationConfig(
+                        pullback_ma=pb_ma, rsi_min=float(rsi_min),
+                        rsi_max=float(rsi_max), max_atr_pct=max_atr,
+                    )
+                    label = (f"pb_ma={pb_ma}|rsi_min={rsi_min}|"
+                             f"rsi_max={rsi_max}|max_atr={max_atr}")
+                    out.append((label, PullbackContinuationStrategy(cfg=cfg)))
+    return out
+
+
+def _sideways_mr_variants() -> List[Tuple[str, Strategy]]:
+    out: List[Tuple[str, Strategy]] = []
+    for bb_w in (20, 30):
+        for bb_std in (1.8, 2.0, 2.2):
+            for rsi_min in (20, 25, 30):
+                for rsi_max in (40, 45, 50):
+                    if rsi_min >= rsi_max:
+                        continue
+                    cfg = SidewaysMeanReversionConfig(
+                        bb_window=bb_w, bb_std=bb_std,
+                        rsi_min=float(rsi_min), rsi_max=float(rsi_max),
+                    )
+                    label = (f"bb_w={bb_w}|bb_std={bb_std}|"
+                             f"rsi_min={rsi_min}|rsi_max={rsi_max}")
+                    out.append((label, SidewaysMeanReversionStrategy(cfg=cfg)))
+    return out
+
+
+def _regime_selector_variants() -> List[Tuple[str, Strategy]]:
+    """Small, conservative fragility grid for the regime selector.
+
+    Tests two routing axes: which bull-strategy to delegate to (trend vs
+    pullback) and the sideways strategy's RSI-band width / max-ATR
+    tolerance. Deliberately tiny to avoid optimisation-as-research."""
+    out: List[Tuple[str, Strategy]] = []
+    bull_choices = [
+        ("trend", TrendFollowingStrategy()),
+        ("pullback", PullbackContinuationStrategy()),
+    ]
+    sideways_rsi_bands = [(25, 45), (30, 50)]
+    sideways_atr_caps = (4.0, 5.0, 6.0)
+    for bull_name, bull_strat in bull_choices:
+        for rsi_min, rsi_max in sideways_rsi_bands:
+            for max_atr in sideways_atr_caps:
+                sw_cfg = SidewaysMeanReversionConfig(
+                    rsi_min=float(rsi_min), rsi_max=float(rsi_max),
+                    max_atr_pct=max_atr,
+                )
+                sw_strat = SidewaysMeanReversionStrategy(cfg=sw_cfg)
+                label = (f"bull={bull_name}|sideways_rsi={rsi_min}-{rsi_max}"
+                         f"|max_atr={max_atr}")
+                out.append((label, RegimeSelectorStrategy(
+                    bull_strategy=bull_strat, sideways_strategy=sw_strat,
+                    name_suffix=label,
+                )))
     return out
 
 
@@ -448,6 +847,89 @@ def robustness(
     df = pd.DataFrame(rows)
     if save:
         utils.write_df(df, config.RESULTS_DIR / "robustness_results.csv")
+    return df
+
+
+def robustness_by_strategy(
+    assets: Sequence[str] = ("BTC/USDT", "ETH/USDT"),
+    timeframes: Sequence[str] = ("1h", "4h", "1d"),
+    risk_cfg: Optional[config.RiskConfig] = None,
+    strat_cfg: Optional[config.StrategyConfig] = None,
+    families_filter: Optional[Sequence[str]] = None,
+    save: bool = True,
+) -> pd.DataFrame:
+    """Robustness sweep across all tradable strategy families. Each row
+    records (strategy_name, parameter_set, asset, timeframe, metrics).
+
+    `families_filter` (e.g. `["regime_selector"]`) limits the sweep to a
+    subset — used by `--strategy` on the CLI to avoid the multi-hour 1h
+    sweep when only one family matters.
+
+    Output: results/robustness_by_strategy.csv.
+    """
+    utils.assert_paper_only()
+    all_families: List[Tuple[str, List[Tuple[str, Strategy]]]] = [
+        ("rsi_ma_atr", _rsi_variants(strat_cfg)),
+        ("ma_cross", _ma_variants()),
+        ("breakout", _breakout_variants_extended()),
+        ("trend_following", _trend_following_variants()),
+        ("pullback_continuation", _pullback_variants()),
+        ("sideways_mean_reversion", _sideways_mr_variants()),
+        ("regime_selector", _regime_selector_variants()),
+    ]
+    if families_filter:
+        keep = set(families_filter)
+        families = [(n, vs) for (n, vs) in all_families if n in keep]
+        if not families:
+            logger.warning(
+                "robustness_by_strategy: no families match filter %s",
+                families_filter,
+            )
+    else:
+        families = all_families
+    total_runs = sum(
+        len(vs) * len(assets) * len(timeframes) for _, vs in families
+    )
+    logger.info(
+        "robustness_by_strategy: %d families × variants × %d assets × "
+        "%d timeframes = %d total runs",
+        len(families), len(assets), len(timeframes), total_runs,
+    )
+    rows: List[Dict] = []
+    counter = 0
+    for family, variants in families:
+        for variant_label, strat in variants:
+            for asset in assets:
+                for tf in timeframes:
+                    counter += 1
+                    if counter == 1 or counter % 25 == 0 or counter == total_runs:
+                        logger.info(
+                            "robustness [%d/%d] %s::%s on %s %s",
+                            counter, total_runs, family, variant_label,
+                            asset, tf,
+                        )
+                    metrics, err, _ = _safe_run(
+                        strategy=strat, asset=asset, timeframe=tf,
+                        risk_cfg=risk_cfg, strat_cfg=strat_cfg,
+                    )
+                    if err is not None:
+                        rows.append({
+                            "strategy_name": family, "family": family,
+                            "parameter_set": variant_label,
+                            "variant": variant_label,
+                            "asset": asset, "timeframe": tf, "error": err,
+                        })
+                        continue
+                    row = _metrics_row(asset, tf, variant_label, metrics)
+                    row["strategy_name"] = family
+                    row["family"] = family
+                    row["parameter_set"] = variant_label
+                    row["variant"] = variant_label
+                    row["error"] = None
+                    rows.append(row)
+    df = pd.DataFrame(rows)
+    if save:
+        utils.write_df(df, config.RESULTS_DIR / "robustness_by_strategy.csv")
     return df
 
 
@@ -553,6 +1035,7 @@ def research_summary(
     robustness_df: Optional[pd.DataFrame] = None,
     monte_carlo_summary: Optional[Dict] = None,
     target_strategy_name: str = "rsi_ma_atr",
+    scorecard_df: Optional[pd.DataFrame] = None,
     save: bool = True,
 ) -> Dict:
     """Produce a brutally honest verdict for each research lens.
@@ -690,7 +1173,100 @@ def research_summary(
                          f"{mean_trades:.1f}. PASS requires "
                          f"≥{MIN_TRADES_FOR_CONFIDENCE}."))
 
-    # 7. Should it be paper-traded further? -------------------------------
+    # 7. Best strategy by scorecard ---------------------------------------
+    if scorecard_df is None or scorecard_df.empty:
+        out["best_tradable_by_scorecard"] = _verdict(
+            pass_=False, inconclusive=True,
+            message="No scorecard available (run research_all).")
+    else:
+        picks = _scorecard.best_picks(scorecard_df)
+        best_tr = picks.get("best_tradable")
+        beats = picks.get("any_tradable_beats_benchmark")
+        if picks["any_pass"]:
+            out["best_tradable_by_scorecard"] = _verdict(
+                pass_=True, inconclusive=False,
+                message=(
+                    f"PASS tradable strategies: {picks['n_pass']}; best — "
+                    f"{best_tr['strategy_name']} on {best_tr['asset']} "
+                    f"{best_tr['timeframe']} (score {best_tr['total_score']}). "
+                    f"Tradable beats benchmark: {beats}."),
+            )
+        elif picks["n_watchlist"] > 0:
+            out["best_tradable_by_scorecard"] = _verdict(
+                pass_=False, inconclusive=True,
+                message=(
+                    f"No PASS tradable strategies. Watchlist: "
+                    f"{picks['n_watchlist']}, FAIL: {picks['n_fail']}, "
+                    f"INCONCLUSIVE: {picks['n_inconclusive']}. "
+                    f"Best tradable so far: "
+                    f"{(best_tr or {}).get('strategy_name', 'n/a')} "
+                    f"(score {(best_tr or {}).get('total_score', 'n/a')}). "
+                    f"Tradable beats benchmark: {beats}."),
+            )
+        else:
+            out["best_tradable_by_scorecard"] = _verdict(
+                pass_=False, inconclusive=False,
+                message=(
+                    f"No PASS or WATCHLIST tradable strategies. "
+                    f"FAIL: {picks['n_fail']}, INCONCLUSIVE: "
+                    f"{picks['n_inconclusive']}. "
+                    f"Tradable beats benchmark: {beats}."),
+            )
+
+    # 7b. Regime-selector specific check ----------------------------------
+    if scorecard_df is None or scorecard_df.empty:
+        out["regime_selector_outcome"] = _verdict(
+            pass_=False, inconclusive=True,
+            message="No scorecard available — cannot evaluate regime selector.",
+        )
+    else:
+        sel_rows = scorecard_df[
+            scorecard_df["strategy_name"].astype(str).str.startswith("regime_selector")
+        ]
+        if sel_rows.empty:
+            out["regime_selector_outcome"] = _verdict(
+                pass_=False, inconclusive=True,
+                message="regime_selector not found in scorecard rows.",
+            )
+        else:
+            sel_best = sel_rows.sort_values("total_score", ascending=False).iloc[0]
+            # Compare against the best non-regime-selector tradable.
+            tradable = scorecard_df[
+                (~scorecard_df["is_benchmark"].astype(bool))
+                & (~scorecard_df["strategy_name"].astype(str)
+                    .str.startswith("regime_selector"))
+            ]
+            best_other = (tradable.sort_values("total_score", ascending=False)
+                          .iloc[0].to_dict() if not tradable.empty else None)
+            beats_others = (
+                best_other is not None
+                and float(sel_best["total_score"]) > float(best_other["total_score"])
+            )
+            improved_oos = float(sel_best.get("walk_forward_score", 0)) > 0
+            sel_pass = sel_best["verdict"] == "PASS"
+            if sel_pass:
+                out["regime_selector_outcome"] = _verdict(
+                    pass_=True, inconclusive=False,
+                    message=(
+                        f"regime_selector PASSed on {sel_best['asset']} "
+                        f"{sel_best['timeframe']} (score "
+                        f"{sel_best['total_score']}). Beats best "
+                        f"always-on tradable: {beats_others}. "
+                        f"Improved OOS stability: {improved_oos}."),
+                )
+            else:
+                out["regime_selector_outcome"] = _verdict(
+                    pass_=False, inconclusive=False,
+                    message=(
+                        f"regime_selector did NOT reach PASS. Best row: "
+                        f"{sel_best['asset']} {sel_best['timeframe']} "
+                        f"(verdict {sel_best['verdict']}, score "
+                        f"{sel_best['total_score']}). Beats best always-on "
+                        f"tradable: {beats_others}. Improved OOS stability: "
+                        f"{improved_oos}."),
+                )
+
+    # 8. Should it be paper-traded further? -------------------------------
     pass_count = sum(1 for v in out.values() if v["verdict"] == "PASS")
     fail_count = sum(1 for v in out.values() if v["verdict"] == "FAIL")
     incon_count = sum(1 for v in out.values() if v["verdict"] == "INCONCLUSIVE")
@@ -734,37 +1310,372 @@ def research_summary(
 
 
 # ---------------------------------------------------------------------------
-# Convenience: run everything
+# Market regime analysis
 # ---------------------------------------------------------------------------
+def regime_analysis(
+    assets: Sequence[str] = ("BTC/USDT", "ETH/USDT"),
+    timeframes: Sequence[str] = ("1h", "4h", "1d"),
+    save: bool = True,
+) -> pd.DataFrame:
+    """Per (asset, timeframe) regime distribution. Saves to
+    `results/regime_summary.csv` and per-(asset,tf) detail CSVs."""
+    utils.assert_paper_only()
+    rows: List[Dict] = []
+    for asset in assets:
+        for tf in timeframes:
+            try:
+                df = data_collector.load_candles(asset, tf)
+            except FileNotFoundError as e:
+                rows.append({"asset": asset, "timeframe": tf,
+                             "error": f"missing data: {e}"})
+                continue
+            with_regimes = _regime.add_regime_columns(df)
+            row = _regime.regime_summary_row(asset, tf, with_regimes)
+            row["error"] = None
+            rows.append(row)
+            if save:
+                detail_path = (
+                    config.RESULTS_DIR
+                    / f"regime_{utils.safe_symbol(asset)}_{tf}.csv"
+                )
+                cols = ["timestamp", "datetime", "close", "ma50", "ma200",
+                        "ma200_slope", "ma_spread_pct", "atr_pct",
+                        "trend_regime", "volatility_regime", "regime_label"]
+                cols = [c for c in cols if c in with_regimes.columns]
+                utils.write_df(with_regimes[cols], detail_path)
+    out = pd.DataFrame(rows)
+    if save:
+        utils.write_df(out, config.RESULTS_DIR / "regime_summary.csv")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Scorecard wrapper (saves to results/strategy_scorecard.csv)
+# ---------------------------------------------------------------------------
+def build_scorecard_from_saved(
+    save: bool = True,
+) -> pd.DataFrame:
+    """Re-read the saved Research Lab CSVs and rebuild the scorecard.
+
+    Prefers `walk_forward_by_strategy.csv` and `robustness_by_strategy.csv`
+    (strategy-keyed) over the legacy single-strategy files. If neither set
+    exists for a given strategy, that component degrades to 0 with a note
+    — never reuses one strategy's data as a proxy for another.
+    """
+    sc_path = config.RESULTS_DIR / "strategy_comparison.csv"
+    wf_by_path = config.RESULTS_DIR / "walk_forward_by_strategy.csv"
+    wf_legacy_path = config.RESULTS_DIR / "walk_forward_results.csv"
+    rb_by_path = config.RESULTS_DIR / "robustness_by_strategy.csv"
+    rb_legacy_path = config.RESULTS_DIR / "robustness_results.csv"
+    if not sc_path.exists():
+        return pd.DataFrame()
+    sc = pd.read_csv(sc_path)
+    if wf_by_path.exists():
+        wf = pd.read_csv(wf_by_path)
+    elif wf_legacy_path.exists():
+        wf = pd.read_csv(wf_legacy_path)
+    else:
+        wf = None
+    if rb_by_path.exists():
+        rb = pd.read_csv(rb_by_path)
+    elif rb_legacy_path.exists():
+        rb = pd.read_csv(rb_legacy_path)
+    else:
+        rb = None
+    return _scorecard.build_scorecard(sc, wf, rb, save=save)
+
+
+# ---------------------------------------------------------------------------
+# Resumable stage runner
+# ---------------------------------------------------------------------------
+import json as _json
+from datetime import datetime as _dt, timezone as _tz
+from . import oos_audit as _oos_audit  # noqa: E402
+
+# Canonical stage names (executed in this order when "all" is requested).
+STAGES_IN_ORDER: List[str] = [
+    "data_coverage",
+    "regimes",
+    "strategy_comparison",
+    "walk_forward",
+    "robustness",
+    "scorecard",
+    "monte_carlo",
+    "oos_audit",
+    "placebo_audit",
+    "summary",
+]
+RUN_STATE_PATH = config.RESULTS_DIR / "research_run_state.json"
+
+
+def _read_run_state() -> Dict:
+    if not RUN_STATE_PATH.exists() or RUN_STATE_PATH.stat().st_size == 0:
+        return {"started_at": None, "finished_at": None,
+                "stages_completed": [], "interrupted": False, "stages": {}}
+    try:
+        return _json.loads(RUN_STATE_PATH.read_text())
+    except Exception:  # noqa: BLE001
+        return {"started_at": None, "finished_at": None,
+                "stages_completed": [], "interrupted": False, "stages": {}}
+
+
+def _write_run_state(state: Dict) -> None:
+    utils.ensure_dirs([config.RESULTS_DIR])
+    RUN_STATE_PATH.write_text(_json.dumps(state, indent=2, default=str))
+
+
+def _stale_summary_paths() -> List[str]:
+    """Files that represent the FINAL verdict — they must be deleted at
+    the start of any partial run so an interrupted pipeline cannot leave
+    a misleading 'completed' verdict in place."""
+    return [
+        str(config.RESULTS_DIR / "research_summary.csv"),
+        str(config.RESULTS_DIR / "strategy_scorecard.csv"),
+    ]
+
+
+def _maybe_emit_robustness_warning(
+    timeframes: Sequence[str], skip_robustness: bool,
+) -> None:
+    """Print a clear runtime warning before launching a 1h robustness sweep.
+    No-op when robustness is skipped or when 1h is not in the timeframe list."""
+    if skip_robustness:
+        return
+    if "1h" not in [str(t) for t in timeframes]:
+        return
+    logger.warning(
+        "robustness on 1h is SLOW. With ~35,000 1h bars × ~250 variants × "
+        "%d assets, this stage can take 30-60 minutes. Use "
+        "`--skip-robustness` to skip, or `--strategy NAME` to limit to "
+        "one family.",
+        len(set(["BTC/USDT", "ETH/USDT"])),
+    )
+
+
+def run_stages(
+    *,
+    stages: Sequence[str] = ("all",),
+    assets: Sequence[str] = ("BTC/USDT", "ETH/USDT"),
+    timeframes: Sequence[str] = ("1h", "4h", "1d"),
+    n_sim: int = 1000,
+    skip_robustness: bool = False,
+    strategy_filter: Optional[str] = None,
+) -> Dict:
+    """Run a subset (or all) of the research stages and persist a
+    `research_run_state.json` after each one.
+
+    `stages=("all",)` runs everything in `STAGES_IN_ORDER`. Otherwise pass
+    a list of explicit stage names. Inputs that a stage requires from a
+    prior stage must already exist on disk (we do NOT silently re-run
+    upstream dependencies).
+
+    `skip_robustness` toggles the heaviest stage off. `strategy_filter`
+    narrows comparison + walk-forward + robustness to one named family.
+    """
+    utils.assert_paper_only()
+
+    requested: List[str] = []
+    if "all" in stages:
+        requested = list(STAGES_IN_ORDER)
+    else:
+        requested = [s for s in stages if s in STAGES_IN_ORDER]
+        unknown = [s for s in stages if s not in STAGES_IN_ORDER and s != "all"]
+        if unknown:
+            raise ValueError(
+                f"unknown stage(s) {unknown}. Known: {STAGES_IN_ORDER}"
+            )
+    if skip_robustness and "robustness" in requested:
+        requested.remove("robustness")
+    _maybe_emit_robustness_warning(timeframes, skip_robustness or
+                                   "robustness" not in requested)
+
+    # Force-delete the FINAL verdict files at the start of a partial run.
+    # If the stage runner aborts halfway, the verdict is recreated only
+    # when the `summary` stage actually completes — never silently stale.
+    if "summary" in requested or "scorecard" in requested:
+        for p in _stale_summary_paths():
+            try:
+                Path(p).unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning("could not remove %s: %s", p, e)
+
+    state = _read_run_state()
+    state["started_at"] = _ts_now_iso()
+    state["finished_at"] = None
+    state["interrupted"] = True  # flips to False on clean completion
+    state["requested_stages"] = list(requested)
+    state["assets"] = list(assets)
+    state["timeframes"] = list(timeframes)
+    state["skip_robustness"] = bool(skip_robustness)
+    state["strategy_filter"] = strategy_filter
+    state["stages"] = state.get("stages", {})
+    state["stages_completed"] = state.get("stages_completed", [])
+    _write_run_state(state)
+
+    out: Dict[str, object] = {}
+
+    def _mark(stage: str) -> None:
+        state["stages"][stage] = {"finished_at": _ts_now_iso()}
+        if stage not in state["stages_completed"]:
+            state["stages_completed"].append(stage)
+        _write_run_state(state)
+
+    try:
+        # --- helper to filter strategies + WF/comparison lists by name ---
+        def _filter_strats(strats):
+            if not strategy_filter:
+                return strats
+            return [s for s in strats
+                    if (s.name if hasattr(s, "name") else s[0]) == strategy_filter]
+
+        if "data_coverage" in requested:
+            logger.info("=== stage: data_coverage ===")
+            out["data_coverage_df"] = data_coverage_audit(
+                assets=assets, timeframes=timeframes,
+            )
+            _mark("data_coverage")
+
+        if "regimes" in requested:
+            logger.info("=== stage: regimes ===")
+            out["regime_df"] = regime_analysis(assets=assets, timeframes=timeframes)
+            _mark("regimes")
+
+        if "strategy_comparison" in requested:
+            logger.info("=== stage: strategy_comparison ===")
+            tf_df = timeframe_comparison(assets=assets, timeframes=timeframes)
+            out["timeframe_df"] = tf_df
+            sc_df = strategy_comparison(assets=assets, timeframes=timeframes)
+            if strategy_filter:
+                sc_df = sc_df[sc_df["strategy"].astype(str) == strategy_filter]
+                utils.write_df(sc_df, config.RESULTS_DIR / "strategy_comparison.csv")
+            out["strategy_df"] = sc_df
+            _mark("strategy_comparison")
+
+        if "walk_forward" in requested:
+            logger.info("=== stage: walk_forward ===")
+            wf_df = walk_forward(assets=assets, timeframes=timeframes)
+            wf_strats = _wf_strategies_default()
+            if strategy_filter:
+                wf_strats = [(n, s) for n, s in wf_strats if n == strategy_filter]
+            wf_by_df = walk_forward_by_strategy(
+                strategies=wf_strats, assets=assets, timeframes=timeframes,
+            )
+            out["walk_forward_df"] = wf_df
+            out["walk_forward_by_strategy_df"] = wf_by_df
+            _mark("walk_forward")
+
+        if "robustness" in requested:
+            logger.info("=== stage: robustness ===")
+            out["robustness_df"] = robustness(assets=assets, timeframes=timeframes)
+            out["robustness_by_strategy_df"] = robustness_by_strategy(
+                assets=assets, timeframes=timeframes,
+                families_filter=[strategy_filter] if strategy_filter else None,
+            )
+            _mark("robustness")
+
+        if "scorecard" in requested:
+            logger.info("=== stage: scorecard ===")
+            sc_df = out.get("strategy_df")
+            if sc_df is None:
+                sc_path = config.RESULTS_DIR / "strategy_comparison.csv"
+                sc_df = pd.read_csv(sc_path) if sc_path.exists() else pd.DataFrame()
+            wf_path = config.RESULTS_DIR / "walk_forward_by_strategy.csv"
+            rb_path = config.RESULTS_DIR / "robustness_by_strategy.csv"
+            wf = pd.read_csv(wf_path) if wf_path.exists() else None
+            rb = pd.read_csv(rb_path) if rb_path.exists() else None
+            scard_df = _scorecard.build_scorecard(sc_df, wf, rb, save=True)
+            out["scorecard_df"] = scard_df
+            _mark("scorecard")
+
+        if "monte_carlo" in requested:
+            logger.info("=== stage: monte_carlo ===")
+            mc_summary: Dict = {"ok": False, "reason": "no saved trades"}
+            trades_path = config.LOGS_DIR / "trades.csv"
+            if trades_path.exists() and trades_path.stat().st_size > 0:
+                try:
+                    tdf = pd.read_csv(trades_path)
+                    mc_summary = monte_carlo_from_trades(
+                        tdf, starting_capital=config.RISK.starting_capital,
+                        n_sim=n_sim,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    mc_summary = {"ok": False,
+                                  "reason": f"could not load trades: {e}"}
+            out["monte_carlo"] = mc_summary
+            _mark("monte_carlo")
+
+        if "oos_audit" in requested:
+            logger.info("=== stage: oos_audit ===")
+            audit_df, summary_df = _oos_audit.audit_walk_forward(save=True)
+            out["oos_audit_df"] = audit_df
+            out["oos_audit_summary_df"] = summary_df
+            _mark("oos_audit")
+
+        if "placebo_audit" in requested:
+            logger.info("=== stage: placebo_audit ===")
+            out["placebo_comparison_df"] = placebo_comparison(save=True)
+            _mark("placebo_audit")
+
+        if "summary" in requested:
+            logger.info("=== stage: summary ===")
+            tf_df = out.get("timeframe_df")
+            if tf_df is None:
+                p = config.RESULTS_DIR / "research_timeframe_comparison.csv"
+                tf_df = pd.read_csv(p) if p.exists() else None
+            wf_df = out.get("walk_forward_df")
+            if wf_df is None:
+                p = config.RESULTS_DIR / "walk_forward_results.csv"
+                wf_df = pd.read_csv(p) if p.exists() else None
+            sc_df = out.get("strategy_df")
+            if sc_df is None:
+                p = config.RESULTS_DIR / "strategy_comparison.csv"
+                sc_df = pd.read_csv(p) if p.exists() else None
+            rb_df = out.get("robustness_df")
+            if rb_df is None:
+                p = config.RESULTS_DIR / "robustness_results.csv"
+                rb_df = pd.read_csv(p) if p.exists() else None
+            scard_df = out.get("scorecard_df")
+            if scard_df is None:
+                p = config.RESULTS_DIR / "strategy_scorecard.csv"
+                scard_df = pd.read_csv(p) if p.exists() else None
+            mc_summary = out.get("monte_carlo")
+            summary = research_summary(
+                timeframe_df=tf_df, walk_forward_df=wf_df,
+                strategy_df=sc_df, robustness_df=rb_df,
+                monte_carlo_summary=mc_summary,
+                scorecard_df=scard_df,
+            )
+            out["summary"] = summary
+            _mark("summary")
+
+        # Clean completion.
+        state["interrupted"] = False
+        state["finished_at"] = _ts_now_iso()
+        _write_run_state(state)
+        return out
+    except KeyboardInterrupt:
+        state["interrupted"] = True
+        state["finished_at"] = _ts_now_iso()
+        _write_run_state(state)
+        logger.warning(
+            "research run interrupted after stages: %s",
+            state["stages_completed"],
+        )
+        raise
+
+
 def run_all(
     assets: Sequence[str] = ("BTC/USDT", "ETH/USDT"),
     timeframes: Sequence[str] = ("1h", "4h", "1d"),
     n_sim: int = 1000,
+    skip_robustness: bool = False,
+    strategy_filter: Optional[str] = None,
 ) -> Dict:
-    """Run every research lens and produce a final summary. Saves all CSVs."""
-    tf_df = timeframe_comparison(assets=assets, timeframes=timeframes)
-    wf_df = walk_forward(assets=assets, timeframes=timeframes)
-    sc_df = strategy_comparison(assets=assets, timeframes=timeframes)
-    rb_df = robustness(assets=assets, timeframes=timeframes)
-    # Monte Carlo on the incumbent strategy's most recent saved trades.
-    mc_summary: Dict = {"ok": False, "reason": "no saved trades"}
-    trades_path = config.LOGS_DIR / "trades.csv"
-    if trades_path.exists() and trades_path.stat().st_size > 0:
-        try:
-            tdf = pd.read_csv(trades_path)
-            mc_summary = monte_carlo_from_trades(
-                tdf, starting_capital=config.RISK.starting_capital,
-                n_sim=n_sim,
-            )
-        except Exception as e:  # noqa: BLE001
-            mc_summary = {"ok": False, "reason": f"could not load trades: {e}"}
-    summary = research_summary(
-        timeframe_df=tf_df, walk_forward_df=wf_df,
-        strategy_df=sc_df, robustness_df=rb_df,
-        monte_carlo_summary=mc_summary,
+    """Back-compat shim — delegates to `run_stages(stages=('all',), ...)`."""
+    return run_stages(
+        stages=("all",), assets=assets, timeframes=timeframes,
+        n_sim=n_sim, skip_robustness=skip_robustness,
+        strategy_filter=strategy_filter,
     )
-    return {
-        "timeframe_df": tf_df, "walk_forward_df": wf_df,
-        "strategy_df": sc_df, "robustness_df": rb_df,
-        "monte_carlo": mc_summary, "summary": summary,
-    }

@@ -32,9 +32,17 @@ RESULTS_DIR: Path = REPO_ROOT / "results"
 # ---------------------------------------------------------------------------
 # Market / exchange settings (PUBLIC DATA ONLY — no API keys ever)
 # ---------------------------------------------------------------------------
-PRIMARY_EXCHANGE: str = "kraken"
-FALLBACK_EXCHANGE: str = "binance"
+PRIMARY_EXCHANGE: str = "binance"
+FALLBACK_EXCHANGE: str = "kraken"
 ASSETS: List[str] = ["BTC/USDT", "ETH/USDT"]
+# Larger universe used by the portfolio momentum rotation research module
+# (NOT used by the single-asset strategies). The download command will
+# silently skip any symbol the exchange does not list, and the portfolio
+# backtester reports availability in `data_coverage.csv`.
+EXPANDED_UNIVERSE: List[str] = [
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT",
+    "XRP/USDT", "DOGE/USDT", "ADA/USDT", "LTC/USDT", "BNB/USDT",
+]
 TIMEFRAMES: List[str] = ["1h", "4h", "1d"]
 DEFAULT_TIMEFRAME: str = "4h"
 
@@ -44,10 +52,17 @@ DEFAULT_TIMEFRAME: str = "4h"
 KRAKEN_USDT_TO_USD_FALLBACK: bool = True
 
 # How much history to download by default (days back from "now")
-DEFAULT_HISTORY_DAYS: int = 730  # ~2 years
+DEFAULT_HISTORY_DAYS: int = 1460  # ~4 years — required for the 90/30 walk-forward
 
-# ccxt pagination chunk size (in candles) — Kraken caps around 720
-FETCH_CHUNK_LIMIT: int = 500
+# Per-exchange pagination chunk size. Kraken caps near 720 of the most-recent
+# bars regardless of `since`, so true backwards history requires Binance
+# (which supports `startTime` paging at 1000 candles per call).
+FETCH_CHUNK_LIMITS: dict = {
+    "binance": 1000,
+    "kraken": 720,
+}
+# Back-compat alias for older call sites.
+FETCH_CHUNK_LIMIT: int = 1000
 
 
 # ---------------------------------------------------------------------------

@@ -111,6 +111,51 @@ def _buy_and_hold_return(price_curves: Dict[str, pd.DataFrame],
     return (total_end / starting_capital) - 1.0 if starting_capital > 0 else 0.0
 
 
+def _buy_and_hold_max_drawdown_pct(price_curves: Dict[str, pd.DataFrame],
+                                   starting_capital: float,
+                                   start_ts_ms: Optional[int] = None,
+                                   end_ts_ms: Optional[int] = None) -> float:
+    """Maximum drawdown of an equal-weight buy-and-hold portfolio over the
+    same window. Returns a negative percent (or 0.0 when not computable).
+    Uses per-bar mark-to-market on the union of asset timestamps within
+    the window — no future data, no warmup contamination.
+    """
+    if not price_curves or starting_capital <= 0:
+        return 0.0
+    n = len(price_curves)
+    per_asset = starting_capital / n
+    series_list: List[pd.Series] = []
+    for df in price_curves.values():
+        sub = df
+        if start_ts_ms is not None:
+            sub = sub[sub["timestamp"] >= start_ts_ms]
+        if end_ts_ms is not None:
+            sub = sub[sub["timestamp"] <= end_ts_ms]
+        if len(sub) < 2:
+            continue
+        first = float(sub.iloc[0]["close"])
+        if first <= 0:
+            continue
+        units = per_asset / first
+        s = pd.Series(
+            sub["close"].astype(float).values * units,
+            index=pd.to_numeric(sub["timestamp"]).astype("int64").values,
+            dtype=float,
+        )
+        series_list.append(s)
+    if not series_list:
+        return 0.0
+    portfolio = pd.concat(series_list, axis=1).sort_index()
+    # Forward-fill within each asset (gaps when one asset has fewer bars)
+    # so we always mark-to-market against the most recent available price.
+    portfolio = portfolio.ffill().fillna(0.0).sum(axis=1)
+    if portfolio.empty:
+        return 0.0
+    running_max = portfolio.cummax()
+    dd = (portfolio / running_max) - 1.0
+    return float(dd.min()) * 100.0
+
+
 # ---------------------------------------------------------------------------
 # Public: compute_metrics
 # ---------------------------------------------------------------------------
@@ -120,7 +165,9 @@ class Metrics:
     final_portfolio_value: float
     total_return_pct: float
     buy_and_hold_return_pct: float
+    buy_and_hold_max_drawdown_pct: float  # negative % over the same window
     strategy_vs_bh_pct: float
+    drawdown_vs_bh_pct: float             # strat_dd - bh_dd; positive = better than B&H
     max_drawdown_pct: float
     max_drawdown_abs: float
     win_rate_pct: float
@@ -154,7 +201,9 @@ def compute_metrics(
         # Empty backtest — return zeros so the dashboard can still render.
         return Metrics(
             starting_capital=starting_capital, final_portfolio_value=starting_capital,
-            total_return_pct=0.0, buy_and_hold_return_pct=0.0, strategy_vs_bh_pct=0.0,
+            total_return_pct=0.0, buy_and_hold_return_pct=0.0,
+            buy_and_hold_max_drawdown_pct=0.0,
+            strategy_vs_bh_pct=0.0, drawdown_vs_bh_pct=0.0,
             max_drawdown_pct=0.0, max_drawdown_abs=0.0, win_rate_pct=0.0,
             num_trades=0, num_buys=0, num_sells=0,
             avg_winning_trade=0.0, avg_losing_trade=0.0, profit_factor=0.0,
@@ -174,6 +223,10 @@ def compute_metrics(
     end_ts = int(equity_curve["timestamp"].iloc[-1]) if "timestamp" in equity_curve else None
     bh = _buy_and_hold_return(price_curves, starting_capital,
                               start_ts_ms=start_ts, end_ts_ms=end_ts) * 100.0
+    bh_dd_pct = _buy_and_hold_max_drawdown_pct(
+        price_curves, starting_capital,
+        start_ts_ms=start_ts, end_ts_ms=end_ts,
+    )
 
     dd_abs, dd_pct = _max_drawdown(eq)
     bars_per_year = _infer_bars_per_year(equity_curve["timestamp"])
@@ -210,13 +263,17 @@ def compute_metrics(
     fees_paid = float(trades["fee"].sum()) if not trades.empty else 0.0
     slippage_cost = float(trades["slippage_cost"].sum()) if not trades.empty else 0.0
 
+    strat_dd_pct = dd_pct * 100.0
     return Metrics(
         starting_capital=starting_capital,
         final_portfolio_value=final_value,
         total_return_pct=total_return_pct,
         buy_and_hold_return_pct=bh,
+        buy_and_hold_max_drawdown_pct=bh_dd_pct,
         strategy_vs_bh_pct=total_return_pct - bh,
-        max_drawdown_pct=dd_pct * 100.0,
+        # drawdowns are negative; "less bad" = closer to 0 = larger numerically
+        drawdown_vs_bh_pct=(strat_dd_pct - bh_dd_pct),
+        max_drawdown_pct=strat_dd_pct,
         max_drawdown_abs=dd_abs,
         win_rate_pct=win_rate,
         num_trades=len(pnls),

@@ -8,6 +8,30 @@ A research-only backtesting and paper-trading engine for **BTC/USDT** and **ETH/
 > `utils.assert_paper_only()`. Flipping the flag will not enable trading — it
 > will refuse to run, because no execution module exists in v1.
 
+## Current research status
+
+- **No strategy has passed.**
+- **Do not paper trade.**
+- **Do not connect Kraken** (or any other broker).
+- The research engine is usable as a tool for falsifying future strategy ideas.
+- **BTC buy-and-hold remains the strongest practical baseline.**
+- Future work should use **new signal classes** (funding, on-chain flows, sentiment, real BTC dominance), not further tweaking of price-based TA on the same universe.
+
+For the full evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+
+**Latest measured results** (1459 days of BTC + ETH 1h / 4h / 1d, plus 8 alts at 1d):
+
+- **0 / 54** single-asset cells beat buy-and-hold.
+- **0 / 42** beat the random placebo on both OOS stability and mean return.
+- Portfolio momentum (Top-3 weekly rebalance): beat placebo by 157pp in total return, but only beat BTC in 36% of OOS windows; **FAIL** at 21% stability.
+- Regime-aware portfolio momentum: lost 46% of capital while BTC returned +176%; **FAIL** at 0% stability.
+- Scorecard verdicts across all variants: 40 FAIL · 14 INCONCLUSIVE · 6 BENCHMARK · 6 PLACEBO · **0 PASS · 0 WATCHLIST**.
+
+**Data sources:**
+
+- **Binance** is the primary source for historical research (proper backwards pagination, 1000 candles/call, multi-year depth on BTC/ETH/USDT).
+- **Kraken** is reserved for live/execution use only — its public OHLC API caps at the most-recent ~720 candles regardless of the `since` parameter, which is insufficient for walk-forward validation. The collector detects this "stuck pagination" and falls back to Binance.
+
 ---
 
 ## What it does
@@ -125,6 +149,13 @@ Streamlit Cloud.
 9. Deployment hardening: rate-limit guards, retries with backoff,
    per-exchange symbol sanity checks.
 
+## Recommended local Python version
+
+**Python 3.12** is recommended for local development. Streamlit Community
+Cloud uses Python 3.12 and the project has been validated against it.
+macOS system Python 3.9 still works but produces a harmless `urllib3` /
+`LibreSSL` warning at startup. This is **not** a blocker.
+
 ## Optional Kronos research
 
 Kronos is an optional, **local-only** ML confirmation layer for the
@@ -175,6 +206,28 @@ Streamlit Cloud.
 The `external/`, `*.safetensors`, `*.bin`, `*.pt`, `models/`, `hf_cache/`
 and `results/kronos_*` paths are all gitignored — model weights and the
 upstream Kronos repo are never committed.
+
+## Data source limitations
+
+* **Primary source: Binance public OHLCV** (`startTime` paging, 1000 candles
+  per call — the only one of the two that actually serves multi-year
+  history for 1h / 4h / 1d on BTC/USDT and ETH/USDT).
+* **Fallback source: Kraken public OHLCV** — caps at the most-recent ~720
+  candles regardless of the `since` parameter. The collector detects this
+  "stuck pagination" and bails out so it can fall back to Binance.
+* **Per-symbol price differences between exchanges are real.** Binance and
+  Kraken trade BTC/USDT and ETH/USDT against slightly different spot
+  books (Kraken often uses USD, not USDT, with `KRAKEN_USDT_TO_USD_FALLBACK`
+  bridging the gap). When `download_symbol` merges fallback rows into a
+  primary-short result, you may see small price jumps where the two
+  feeds meet. These are real exchange-level differences, not a bug, and
+  they can affect backtest results. Prefer single-source downloads
+  (Binance is sufficient for our timeframes) when running serious
+  research.
+* `data_coverage.csv` records the actual provenance: `actual_start`,
+  `actual_end`, `candle_count`, `expected_bars`, `gap_count`,
+  `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
+  it before trusting any walk-forward verdict.
 
 ## Safety reminders
 

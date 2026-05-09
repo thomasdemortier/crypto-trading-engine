@@ -172,7 +172,7 @@ def test_monte_carlo_runs_with_enough_trades():
 # ---------------------------------------------------------------------------
 # Research summary verdict shape
 # ---------------------------------------------------------------------------
-def test_research_summary_returns_seven_checks_with_verdicts():
+def test_research_summary_returns_expected_checks_with_verdicts():
     summary = research.research_summary(
         timeframe_df=None, walk_forward_df=None,
         strategy_df=None, robustness_df=None,
@@ -182,6 +182,7 @@ def test_research_summary_returns_seven_checks_with_verdicts():
         "beats_buy_and_hold", "works_on_btc_and_eth",
         "works_across_timeframes", "works_out_of_sample",
         "robust_to_parameters", "statistically_meaningful_trade_count",
+        "best_tradable_by_scorecard", "regime_selector_outcome",
         "worth_paper_trading_further",
     }
     assert set(summary["checks"].keys()) == expected

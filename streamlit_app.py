@@ -1528,8 +1528,9 @@ with st.container(border=True):
 
     rl_tabs = st.tabs([
         "Timeframe comparison", "Walk-forward", "Strategy comparison",
-        "Robustness checks", "Monte Carlo", "Research summary",
-        "Kronos confirmation",
+        "Robustness checks", "Market regimes", "Strategy scorecard",
+        "OOS Audit", "Portfolio Momentum", "Monte Carlo",
+        "Research summary", "Kronos confirmation",
     ])
 
     rl_tf_df = _research_csv("research_timeframe_comparison.csv")
@@ -1538,6 +1539,8 @@ with st.container(border=True):
     rl_rb_df = _research_csv("robustness_results.csv")
     rl_mc_df = _research_csv("monte_carlo_results.csv")
     rl_mcs_df = _research_csv("monte_carlo_simulations.csv")
+    rl_wf_by_strat_df = _research_csv("walk_forward_by_strategy.csv")
+    rl_rb_by_strat_df = _research_csv("robustness_by_strategy.csv")
 
     # One-line explainer shown at the top of each Research Lab tab.
     RL_TAB_EXPLAINERS: Dict[str, str] = {
@@ -1545,6 +1548,10 @@ with st.container(border=True):
         "walk_forward": "Tests future windows instead of one big backtest.",
         "strategy": "Compares rule-based strategies using the same risk engine.",
         "robustness": "Checks whether small parameter changes break the result.",
+        "regimes": "Bull / bear / sideways + volatility distribution per asset.",
+        "scorecard": "Conservative ranking with PASS / WATCHLIST / FAIL / INCONCLUSIVE.",
+        "oos_audit": "Validates the OOS pipeline + compares strategies vs random placebo.",
+        "portfolio": "Multi-asset momentum rotation across the expanded crypto universe.",
         "monte_carlo": "Stress-tests trade-result randomness.",
         "summary": "Plain-English PASS / FAIL verdict.",
         "kronos": "Optional ML confirmation layer. Local install only.",
@@ -1600,6 +1607,33 @@ with st.container(border=True):
     # ---- Walk-forward --------------------------------------------------
     with rl_tabs[1]:
         _explainer("walk_forward")
+        # Prefer per-strategy WF data when available; fall back to legacy
+        # incumbent-only frame.
+        wf_active = (rl_wf_by_strat_df if not rl_wf_by_strat_df.empty
+                     else rl_wf_df)
+        wf_is_per_strategy = (
+            not rl_wf_by_strat_df.empty
+            and "strategy_name" in rl_wf_by_strat_df.columns
+        )
+        if wf_is_per_strategy:
+            ok_all = (wf_active[wf_active["error"].isna()]
+                      if "error" in wf_active.columns else wf_active)
+            strategies_avail = (
+                sorted(ok_all["strategy_name"].dropna().unique().tolist())
+                if not ok_all.empty else []
+            )
+            if strategies_avail:
+                wf_sel_cols = st.columns([1, 3])
+                with wf_sel_cols[0]:
+                    wf_strategy_pick = st.selectbox(
+                        "Strategy", options=strategies_avail,
+                        key="wf_strategy_pick",
+                        help="Walk-forward results are now strategy-specific. "
+                             "Pick which strategy to view.",
+                    )
+                rl_wf_df = ok_all[ok_all["strategy_name"] == wf_strategy_pick]
+            else:
+                rl_wf_df = ok_all
         if rl_wf_df.empty:
             st.info("No walk-forward results yet. Run **Run research lab**.")
         else:
@@ -1645,6 +1679,13 @@ with st.container(border=True):
                 file_name="walk_forward_results.csv",
                 mime="text/csv", key="dl_research_wf",
             )
+            if not rl_wf_by_strat_df.empty:
+                st.download_button(
+                    "Download walk_forward_by_strategy.csv (full set)",
+                    _df_to_csv_bytes(rl_wf_by_strat_df),
+                    file_name="walk_forward_by_strategy.csv",
+                    mime="text/csv", key="dl_research_wf_by_strat",
+                )
 
     # ---- Strategy comparison -------------------------------------------
     with rl_tabs[2]:
@@ -1717,6 +1758,29 @@ with st.container(border=True):
     # ---- Robustness ----------------------------------------------------
     with rl_tabs[3]:
         _explainer("robustness")
+        # Prefer per-strategy robustness when available.
+        rb_active = (rl_rb_by_strat_df if not rl_rb_by_strat_df.empty
+                     else rl_rb_df)
+        rb_is_per_strategy = (
+            not rl_rb_by_strat_df.empty
+            and "strategy_name" in rl_rb_by_strat_df.columns
+        )
+        if rb_is_per_strategy:
+            ok_all_rb = (rb_active[rb_active["error"].isna()]
+                         if "error" in rb_active.columns else rb_active)
+            strats_rb = (sorted(ok_all_rb["strategy_name"].dropna().unique().tolist())
+                         if not ok_all_rb.empty else [])
+            if strats_rb:
+                rb_sel_cols = st.columns([1, 3])
+                with rb_sel_cols[0]:
+                    rb_strategy_pick = st.selectbox(
+                        "Strategy", options=["(all)"] + strats_rb,
+                        key="rb_strategy_pick",
+                    )
+                if rb_strategy_pick != "(all)":
+                    rl_rb_df = ok_all_rb[ok_all_rb["strategy_name"] == rb_strategy_pick]
+                else:
+                    rl_rb_df = ok_all_rb
         if rl_rb_df.empty:
             st.info("No robustness results yet.")
         else:
@@ -1768,9 +1832,572 @@ with st.container(border=True):
                 file_name="robustness_results.csv",
                 mime="text/csv", key="dl_research_rb",
             )
+            if not rl_rb_by_strat_df.empty:
+                st.download_button(
+                    "Download robustness_by_strategy.csv (full grid)",
+                    _df_to_csv_bytes(rl_rb_by_strat_df),
+                    file_name="robustness_by_strategy.csv",
+                    mime="text/csv", key="dl_research_rb_by_strat",
+                )
+
+    # ---- Market regimes ----------------------------------------------
+    with rl_tabs[4]:
+        _explainer("regimes")
+        rl_regime_df = _research_csv("regime_summary.csv")
+        if rl_regime_df.empty:
+            st.info("No regime data yet. Run **Run research lab** to populate.")
+        else:
+            ok = (rl_regime_df[rl_regime_df["error"].isna()]
+                  if "error" in rl_regime_df.columns else rl_regime_df)
+            if ok.empty:
+                st.warning("All regime runs were skipped — see CSV for reasons.")
+            else:
+                cols = [c for c in ["asset", "timeframe", "n_bars",
+                        "pct_bull", "pct_bear", "pct_sideways",
+                        "pct_high_vol", "pct_low_vol"] if c in ok.columns]
+                st.dataframe(
+                    ok[cols], use_container_width=True, hide_index=True,
+                    height=200,
+                )
+                # Per-asset regime mix bars (horizontal stacked).
+                import plotly.graph_objects as _go
+                fig = _go.Figure()
+                labels = (ok["asset"] + " " + ok["timeframe"]).tolist()
+                for col, color in (("pct_bull", "#10b981"),
+                                   ("pct_sideways", "#9ca3af"),
+                                   ("pct_bear", "#f43f5e")):
+                    if col in ok.columns:
+                        fig.add_trace(_go.Bar(
+                            y=labels, x=ok[col], orientation="h",
+                            name=col.replace("pct_", "").replace("_", " "),
+                            marker_color=color,
+                        ))
+                fig.update_layout(
+                    barmode="stack", template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    height=max(200, 50 * len(labels) + 80),
+                    margin=dict(t=20, b=20, l=20, r=20),
+                    xaxis_title="% of bars",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            st.download_button(
+                "Download regime_summary.csv",
+                _df_to_csv_bytes(rl_regime_df),
+                file_name="regime_summary.csv",
+                mime="text/csv", key="dl_research_regimes",
+            )
+
+    # ---- Strategy scorecard ------------------------------------------
+    with rl_tabs[5]:
+        _explainer("scorecard")
+        rl_scorecard_df = _research_csv("strategy_scorecard.csv")
+        if rl_scorecard_df.empty:
+            st.info(
+                "No scorecard yet. Run **Run research lab** (or "
+                "`python main.py scorecard`)."
+            )
+        else:
+            # Split benchmark vs tradable so PASS / WATCHLIST counts only
+            # reflect tradable candidates.
+            if "is_benchmark" in rl_scorecard_df.columns:
+                bench_mask = rl_scorecard_df["is_benchmark"].astype(bool)
+            else:
+                bench_mask = (
+                    rl_scorecard_df["strategy_name"].astype(str)
+                    .str.startswith("buy_and_hold")
+                )
+            tradable = rl_scorecard_df[~bench_mask]
+            benchmarks = rl_scorecard_df[bench_mask]
+            n_pass = int((tradable["verdict"] == "PASS").sum())
+            n_watch = int((tradable["verdict"] == "WATCHLIST").sum())
+            n_fail = int((tradable["verdict"] == "FAIL").sum())
+            n_inc = int((tradable["verdict"] == "INCONCLUSIVE").sum())
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("PASS (tradable)", str(n_pass))
+            sc2.metric("WATCHLIST (tradable)", str(n_watch))
+            sc3.metric("FAIL (tradable)", str(n_fail))
+            sc4.metric("INCONCLUSIVE (tradable)", str(n_inc))
+            if n_pass == 0:
+                st.warning(
+                    "No tradable strategy reached PASS. Treat the watchlist "
+                    "as candidates for more research, not as paper-trade picks.",
+                )
+            st.markdown(
+                "<div class='section-sub'><b>Tradable candidates</b> "
+                "(buy_and_hold is the benchmark and is shown separately).</div>",
+                unsafe_allow_html=True,
+            )
+            disp_cols = [c for c in [
+                "strategy_name", "asset", "timeframe", "verdict",
+                "total_score", "benchmark_score", "walk_forward_score",
+                "robustness_score", "trade_count_score", "drawdown_score",
+                "notes",
+            ] if c in tradable.columns]
+            st.dataframe(
+                tradable[disp_cols],
+                use_container_width=True, hide_index=True, height=320,
+            )
+            if not benchmarks.empty:
+                st.markdown(
+                    "<div class='section-sub'><b>Benchmark</b> "
+                    "(reference only — not a tradable candidate).</div>",
+                    unsafe_allow_html=True,
+                )
+                bench_cols = [c for c in disp_cols
+                              if c in benchmarks.columns]
+                st.dataframe(
+                    benchmarks[bench_cols],
+                    use_container_width=True, hide_index=True, height=120,
+                )
+            st.download_button(
+                "Download strategy_scorecard.csv",
+                _df_to_csv_bytes(rl_scorecard_df),
+                file_name="strategy_scorecard.csv",
+                mime="text/csv", key="dl_research_scorecard",
+            )
+
+    # ---- OOS Audit ----------------------------------------------------
+    with rl_tabs[6]:
+        _explainer("oos_audit")
+        rl_oos_audit_df = _research_csv("oos_audit.csv")
+        rl_oos_summary_df = _research_csv("oos_audit_summary.csv")
+        rl_placebo_cmp_df = _research_csv("placebo_comparison.csv")
+        rl_data_cov_df = _research_csv("data_coverage.csv")
+
+        if rl_oos_summary_df.empty and rl_placebo_cmp_df.empty:
+            st.info(
+                "No OOS audit yet. Run **Run research lab** then "
+                "`python main.py audit_oos` and `python main.py placebo_audit`."
+            )
+        else:
+            # ---- Window mechanics summary ----
+            if not rl_oos_summary_df.empty:
+                n_groups = len(rl_oos_summary_df)
+                n_overlap = int(rl_oos_summary_df["windows_overlap"].sum()) \
+                    if "windows_overlap" in rl_oos_summary_df.columns else 0
+                n_low_conf = int((~rl_oos_summary_df["enough_windows_for_confidence"]).sum()) \
+                    if "enough_windows_for_confidence" in rl_oos_summary_df.columns else 0
+                oc1, oc2, oc3 = st.columns(3)
+                oc1.metric("Audit groups", str(n_groups))
+                oc2.metric("Overlap detected", str(n_overlap))
+                oc3.metric("Below window-count floor", str(n_low_conf))
+                if n_overlap > 0:
+                    st.warning(
+                        f"{n_overlap} (strategy, asset, timeframe) groups have "
+                        f"overlapping OOS windows — investigate before "
+                        f"trusting their stability scores.",
+                    )
+                st.markdown(
+                    "<div class='section-sub'><b>OOS window summary</b> "
+                    "(per strategy, asset, timeframe).</div>",
+                    unsafe_allow_html=True,
+                )
+                cols = [c for c in [
+                    "strategy_name", "asset", "timeframe", "n_windows",
+                    "stability_score_pct", "mean_trades_per_window",
+                    "mean_exposure_pct", "windows_overlap",
+                    "enough_windows_for_confidence", "notes",
+                ] if c in rl_oos_summary_df.columns]
+                st.dataframe(
+                    rl_oos_summary_df[cols],
+                    use_container_width=True, hide_index=True, height=240,
+                )
+
+            # ---- Placebo comparison ----
+            if not rl_placebo_cmp_df.empty:
+                st.markdown(
+                    "<div class='section-sub'><b>Placebo comparison</b> — "
+                    "did the strategy beat a random baseline on OOS "
+                    "stability AND mean OOS return?</div>",
+                    unsafe_allow_html=True,
+                )
+                n_beats = int(rl_placebo_cmp_df["strategy_beats_placebo"].sum()) \
+                    if "strategy_beats_placebo" in rl_placebo_cmp_df.columns else 0
+                pc1, pc2 = st.columns(2)
+                pc1.metric("Rows that beat placebo", str(n_beats))
+                pc2.metric("Total comparison rows", str(len(rl_placebo_cmp_df)))
+                if n_beats == 0:
+                    st.error(
+                        "No (strategy, asset, timeframe) row beat the "
+                        "random placebo on both stability and mean return. "
+                        "Treat this as evidence that no tradable signal "
+                        "exists in this dataset.",
+                        icon="🚨",
+                    )
+                cols_pc = [c for c in [
+                    "strategy_name", "asset", "timeframe",
+                    "strategy_oos_stability", "placebo_oos_stability",
+                    "strategy_mean_oos_return", "placebo_mean_oos_return",
+                    "strategy_mean_trades", "placebo_mean_trades",
+                    "strategy_beats_placebo", "notes",
+                ] if c in rl_placebo_cmp_df.columns]
+                st.dataframe(
+                    rl_placebo_cmp_df[cols_pc],
+                    use_container_width=True, hide_index=True, height=300,
+                )
+
+            # ---- Data coverage ----
+            if not rl_data_cov_df.empty:
+                st.markdown(
+                    "<div class='section-sub'><b>Data coverage</b> — actual "
+                    "vs requested historical depth per (asset, timeframe)."
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                cols_dc = [c for c in [
+                    "asset", "timeframe", "actual_start", "actual_end",
+                    "candle_count", "coverage_days",
+                    "enough_for_walk_forward", "requested_lookback_days",
+                    "notes",
+                ] if c in rl_data_cov_df.columns]
+                st.dataframe(
+                    rl_data_cov_df[cols_dc],
+                    use_container_width=True, hide_index=True, height=200,
+                )
+
+        oc_cols = st.columns(4)
+        for i, (label, name, df) in enumerate([
+            ("OOS audit", "oos_audit.csv", rl_oos_audit_df),
+            ("OOS summary", "oos_audit_summary.csv", rl_oos_summary_df),
+            ("Placebo comparison", "placebo_comparison.csv", rl_placebo_cmp_df),
+            ("Data coverage", "data_coverage.csv", rl_data_cov_df),
+        ]):
+            with oc_cols[i]:
+                if df is not None and not df.empty:
+                    st.download_button(
+                        f"{label} CSV", _df_to_csv_bytes(df),
+                        file_name=name, mime="text/csv",
+                        key=f"dl_oos_audit_{i}", use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        f"{label} CSV (unavailable)",
+                        disabled=True, key=f"dl_oos_audit_{i}_disabled",
+                        use_container_width=True,
+                    )
+
+    # ---- Portfolio Momentum ------------------------------------------
+    with rl_tabs[7]:
+        _explainer("portfolio")
+        st.warning(
+            "Multi-asset crypto research. Long-only, equal-weight Top-N "
+            "momentum rotation. **No live trading. No Kraken execution.**",
+            icon="⚠️",
+        )
+        rl_pm_avail = _research_csv("portfolio_universe_availability.csv")
+        rl_pm_compare = _research_csv("portfolio_momentum_comparison.csv")
+        rl_pm_equity = _research_csv("portfolio_momentum_equity.csv")
+        rl_pm_trades = _research_csv("portfolio_momentum_trades.csv")
+        rl_pm_wf = _research_csv("portfolio_walk_forward.csv")
+        rl_pm_plac = _research_csv("portfolio_placebo_comparison.csv")
+        rl_pm_score = _research_csv("portfolio_scorecard.csv")
+
+        if rl_pm_avail.empty and rl_pm_score.empty:
+            st.info(
+                "No portfolio results yet. Run "
+                "`python main.py research_all_portfolio` "
+                "to populate this tab."
+            )
+        else:
+            # Asset universe + availability
+            if not rl_pm_avail.empty:
+                st.markdown("**Asset universe**")
+                avail = int(rl_pm_avail["available"].sum()) \
+                    if "available" in rl_pm_avail.columns else 0
+                st.caption(
+                    f"{avail}/{len(rl_pm_avail)} requested assets available."
+                )
+                cols = [c for c in [
+                    "asset", "timeframe", "available", "candle_count",
+                    "actual_start", "actual_end", "coverage_days",
+                ] if c in rl_pm_avail.columns]
+                st.dataframe(
+                    rl_pm_avail[cols], use_container_width=True,
+                    hide_index=True, height=200,
+                )
+
+            # Headline scorecard
+            if not rl_pm_score.empty:
+                row = rl_pm_score.iloc[0]
+                verdict = str(row.get("verdict", "—"))
+                cls = ("pill-pos" if verdict == "PASS"
+                       else "pill-amber" if verdict == "WATCHLIST"
+                       else "pill-neg" if verdict == "FAIL"
+                       else "pill-grey")
+                st.markdown(
+                    f"<div style='margin: 0.6rem 0;'>"
+                    f"<span class='pill {cls}'>"
+                    f"<span class='pill-dot'></span>{verdict}</span>"
+                    f"&nbsp;<b>portfolio_momentum</b>: "
+                    f"{row.get('checks_passed', 0)}/{row.get('checks_total', 6)} "
+                    f"PASS checks satisfied.</div>",
+                    unsafe_allow_html=True,
+                )
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Stability score",
+                          f"{float(row.get('stability_score_pct', 0)):.1f}%")
+                m2.metric("% windows beat BTC",
+                          f"{float(row.get('pct_windows_beat_btc', 0)):.0f}%")
+                m3.metric("% windows beat basket",
+                          f"{float(row.get('pct_windows_beat_basket', 0)):.0f}%")
+                m4.metric("Total rebalances",
+                          str(int(row.get('total_rebalances', 0))))
+                m5, m6, m7 = st.columns(3)
+                m5.metric("Strategy full-window return",
+                          f"{float(row.get('strategy_full_return_pct', 0)):+.2f}%")
+                m6.metric("Placebo median return",
+                          f"{float(row.get('placebo_median_return_pct', 0)):+.2f}%")
+                m7.metric("Beats placebo median?",
+                          "YES" if bool(row.get("beats_placebo_median"))
+                          else "NO")
+
+            # Single-window benchmarks comparison
+            if not rl_pm_compare.empty:
+                st.markdown("**Strategy vs benchmarks (full window)**")
+                cols = [c for c in [
+                    "strategy", "total_return_pct", "max_drawdown_pct",
+                    "sharpe_ratio", "exposure_time_pct",
+                ] if c in rl_pm_compare.columns]
+                st.dataframe(
+                    rl_pm_compare[cols], use_container_width=True,
+                    hide_index=True, height=180,
+                )
+
+            # Equity curve chart
+            if not rl_pm_equity.empty:
+                import plotly.graph_objects as _go
+                fig = _go.Figure()
+                fig.add_trace(_go.Scatter(
+                    x=pd.to_datetime(rl_pm_equity["datetime"], utc=True,
+                                     errors="coerce"),
+                    y=rl_pm_equity["equity"], mode="lines",
+                    name="momentum_rotation", line=dict(width=2.0),
+                ))
+                fig.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    height=320, margin=dict(t=30, b=20, l=20, r=20),
+                    xaxis_title="", yaxis_title="USDT",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Walk-forward table
+            if not rl_pm_wf.empty:
+                st.markdown(
+                    f"**Walk-forward** ({len(rl_pm_wf)} OOS windows)"
+                )
+                cols = [c for c in [
+                    "window", "oos_start_iso", "oos_end_iso",
+                    "oos_return_pct", "btc_oos_return_pct",
+                    "basket_oos_return_pct", "beats_btc", "beats_basket",
+                    "n_rebalances", "avg_holdings",
+                ] if c in rl_pm_wf.columns]
+                st.dataframe(
+                    rl_pm_wf[cols], use_container_width=True,
+                    hide_index=True, height=240,
+                )
+
+            # Placebo per-seed table
+            if not rl_pm_plac.empty:
+                seeds = rl_pm_plac[rl_pm_plac["strategy"] == "placebo_seed_runs"] \
+                    if "strategy" in rl_pm_plac.columns else pd.DataFrame()
+                if not seeds.empty:
+                    st.markdown(f"**Placebo per-seed** ({len(seeds)} seeds)")
+                    cols = [c for c in [
+                        "seed", "placebo_return_pct",
+                        "placebo_max_drawdown_pct", "placebo_sharpe",
+                        "placebo_n_trades",
+                    ] if c in seeds.columns]
+                    st.dataframe(
+                        seeds[cols], use_container_width=True,
+                        hide_index=True, height=200,
+                    )
+
+        # CSV downloads
+        pm_dl = st.columns(4)
+        for i, (label, name, df) in enumerate([
+            ("Equity", "portfolio_momentum_equity.csv", rl_pm_equity),
+            ("Walk-forward", "portfolio_walk_forward.csv", rl_pm_wf),
+            ("Placebo", "portfolio_placebo_comparison.csv", rl_pm_plac),
+            ("Scorecard", "portfolio_scorecard.csv", rl_pm_score),
+        ]):
+            with pm_dl[i]:
+                if df is not None and not df.empty:
+                    st.download_button(
+                        f"{label} CSV", _df_to_csv_bytes(df),
+                        file_name=name, mime="text/csv",
+                        key=f"dl_pm_{i}", use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        f"{label} CSV (unavailable)", disabled=True,
+                        key=f"dl_pm_{i}_disabled",
+                        use_container_width=True,
+                    )
+
+        # ---- Cross Asset Regime sub-section -------------------------
+        with st.expander("Cross Asset Regime — regime-aware momentum",
+                         expanded=False):
+            rl_crs = _research_csv("crypto_regime_signals.csv")
+            rl_ra_compare = _research_csv("regime_aware_portfolio_comparison.csv")
+            rl_ra_equity = _research_csv("regime_aware_portfolio_equity.csv")
+            rl_ra_wf = _research_csv("regime_aware_portfolio_walk_forward.csv")
+            rl_ra_plac = _research_csv("regime_aware_portfolio_placebo.csv")
+            rl_ra_score = _research_csv("regime_aware_portfolio_scorecard.csv")
+
+            if rl_crs.empty and rl_ra_score.empty:
+                st.info(
+                    "No regime-aware results yet. Run "
+                    "`python main.py crypto_regime_signals` then "
+                    "`python main.py regime_aware_portfolio_walk_forward` "
+                    "and `python main.py regime_aware_portfolio_placebo` "
+                    "and finally `python main.py regime_aware_portfolio_scorecard`."
+                )
+            else:
+                # Risk-state distribution + current state
+                if not rl_crs.empty and "risk_state" in rl_crs.columns:
+                    valid = rl_crs[rl_crs["risk_state"] != "unknown"]
+                    if not valid.empty:
+                        dist = (valid["risk_state"].value_counts(normalize=True)
+                                * 100.0).round(1).to_dict()
+                        st.markdown("**Risk-state distribution (% of bars)**")
+                        st.caption(", ".join(
+                            f"{k}: {v}%" for k, v in dist.items()
+                        ))
+                        st.metric(
+                            "Current risk state (latest bar)",
+                            str(valid["risk_state"].iloc[-1]),
+                        )
+
+                # Headline scorecard pill
+                if not rl_ra_score.empty:
+                    row = rl_ra_score.iloc[0]
+                    verdict = str(row.get("verdict", "—"))
+                    cls = ("pill-pos" if verdict == "PASS"
+                           else "pill-amber" if verdict == "WATCHLIST"
+                           else "pill-neg" if verdict == "FAIL"
+                           else "pill-grey")
+                    st.markdown(
+                        f"<div style='margin: 0.6rem 0;'>"
+                        f"<span class='pill {cls}'>"
+                        f"<span class='pill-dot'></span>{verdict}</span>"
+                        f"&nbsp;<b>regime_aware_momentum_rotation</b>: "
+                        f"{row.get('checks_passed', 0)}/"
+                        f"{row.get('checks_total', 7)} PASS checks.</div>",
+                        unsafe_allow_html=True,
+                    )
+                    cra1, cra2, cra3, cra4 = st.columns(4)
+                    cra1.metric(
+                        "Stability",
+                        f"{float(row.get('stability_score_pct', 0)):.1f}%",
+                    )
+                    cra2.metric(
+                        "% windows beat BTC",
+                        f"{float(row.get('pct_windows_beat_btc', 0)):.0f}%",
+                    )
+                    cra3.metric(
+                        "% beat simple momentum",
+                        f"{float(row.get('pct_windows_beat_simple_momentum', 0)):.0f}%",
+                    )
+                    cra4.metric(
+                        "Beats placebo",
+                        "YES" if bool(row.get("beats_placebo_median"))
+                        else "NO",
+                    )
+
+                # Strategy vs benchmarks (full window)
+                if not rl_ra_compare.empty:
+                    st.markdown("**Strategy vs benchmarks (full window)**")
+                    cols = [c for c in [
+                        "strategy", "total_return_pct", "max_drawdown_pct",
+                        "sharpe_ratio", "exposure_time_pct",
+                    ] if c in rl_ra_compare.columns]
+                    st.dataframe(
+                        rl_ra_compare[cols], use_container_width=True,
+                        hide_index=True, height=180,
+                    )
+
+                # Equity curve overlay
+                if not rl_ra_equity.empty:
+                    import plotly.graph_objects as _go
+                    fig = _go.Figure()
+                    fig.add_trace(_go.Scatter(
+                        x=pd.to_datetime(rl_ra_equity["datetime"], utc=True,
+                                         errors="coerce"),
+                        y=rl_ra_equity["equity"], mode="lines",
+                        name="regime_aware",
+                    ))
+                    fig.update_layout(
+                        template="plotly_dark",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        height=260, margin=dict(t=20, b=20, l=20, r=20),
+                        xaxis_title="", yaxis_title="USDT",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # Walk-forward table
+                if not rl_ra_wf.empty:
+                    st.markdown(f"**Walk-forward** ({len(rl_ra_wf)} windows)")
+                    cols = [c for c in [
+                        "window", "oos_start_iso", "oos_end_iso",
+                        "oos_return_pct", "btc_oos_return_pct",
+                        "basket_oos_return_pct", "simple_oos_return_pct",
+                        "beats_btc", "beats_basket",
+                        "beats_simple_momentum", "n_rebalances",
+                    ] if c in rl_ra_wf.columns]
+                    st.dataframe(
+                        rl_ra_wf[cols], use_container_width=True,
+                        hide_index=True, height=240,
+                    )
+
+                # Signals table preview
+                if not rl_crs.empty:
+                    st.markdown("**Crypto regime signals (most recent 30 rows)**")
+                    cols = [c for c in [
+                        "datetime", "risk_state", "alt_regime",
+                        "eth_btc_90d_return_pct",
+                        "alt_basket_return_90d_pct",
+                        "btc_return_90d_pct",
+                        "pct_assets_above_100d_ma",
+                        "pct_assets_above_200d_ma",
+                        "pct_assets_beating_btc_30d",
+                        "pct_assets_beating_btc_90d",
+                        "btc_below_200d_ma",
+                    ] if c in rl_crs.columns]
+                    st.dataframe(
+                        rl_crs[cols].tail(30), use_container_width=True,
+                        hide_index=True, height=240,
+                    )
+
+            # CSV downloads
+            ra_dl = st.columns(4)
+            for i, (label, name, df) in enumerate([
+                ("Signals", "crypto_regime_signals.csv", rl_crs),
+                ("Walk-forward", "regime_aware_portfolio_walk_forward.csv",
+                 rl_ra_wf),
+                ("Placebo", "regime_aware_portfolio_placebo.csv", rl_ra_plac),
+                ("Scorecard", "regime_aware_portfolio_scorecard.csv",
+                 rl_ra_score),
+            ]):
+                with ra_dl[i]:
+                    if df is not None and not df.empty:
+                        st.download_button(
+                            f"{label} CSV", _df_to_csv_bytes(df),
+                            file_name=name, mime="text/csv",
+                            key=f"dl_ra_{i}", use_container_width=True,
+                        )
+                    else:
+                        st.button(
+                            f"{label} CSV (unavailable)", disabled=True,
+                            key=f"dl_ra_{i}_disabled",
+                            use_container_width=True,
+                        )
 
     # ---- Monte Carlo --------------------------------------------------
-    with rl_tabs[4]:
+    with rl_tabs[8]:
         _explainer("monte_carlo")
         if rl_mc_df.empty:
             st.info(
@@ -1835,7 +2462,7 @@ with st.container(border=True):
             )
 
     # ---- Research summary ---------------------------------------------
-    with rl_tabs[5]:
+    with rl_tabs[9]:
         _explainer("summary")
         rl_summary_df = _research_csv("research_summary.csv")
         if rl_summary_df.empty:
@@ -1871,7 +2498,7 @@ with st.container(border=True):
             )
 
     # ---- Kronos confirmation (optional, local only) -------------------
-    with rl_tabs[6]:
+    with rl_tabs[10]:
         _explainer("kronos")
         st.warning(
             "Kronos is experimental. It confirms or rejects strategy signals. "

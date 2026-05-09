@@ -18,6 +18,15 @@ Usage:
     python main.py kronos_evaluate
     python main.py kronos_confirm
     python main.py kronos_compare
+    python main.py regimes
+    python main.py scorecard
+    python main.py audit_oos
+    python main.py placebo_audit
+    python main.py portfolio_momentum
+    python main.py portfolio_walk_forward
+    python main.py portfolio_placebo
+    python main.py portfolio_scorecard
+    python main.py research_all_portfolio
 """
 
 from __future__ import annotations
@@ -30,7 +39,8 @@ from pathlib import Path
 import pandas as pd
 
 from src import (
-    backtester, config, data_collector, paper_trader, performance,
+    backtester, config, crypto_regime_signals, data_collector, oos_audit,
+    paper_trader, performance, portfolio_audit, portfolio_research,
     research, utils,
 )
 
@@ -39,13 +49,28 @@ logger = utils.get_logger("cte.cli")
 
 def cmd_download(args: argparse.Namespace) -> int:
     utils.assert_paper_only()
+    # `--lookback-days` is the spec name; `--days` is the older alias.
+    lookback = getattr(args, "lookback_days", None) or args.days
     paths = data_collector.download_all(
         assets=args.assets, timeframes=args.timeframes,
-        days=args.days, refresh=args.refresh,
+        days=lookback, refresh=args.refresh,
     )
     print(f"downloaded {len(paths)} dataset(s)")
     for p in paths:
         print(f"  - {p}")
+    # Always emit the coverage audit so the user immediately sees whether
+    # the requested lookback was actually achievable.
+    coverage = research.data_coverage_audit(
+        assets=args.assets, timeframes=args.timeframes,
+        requested_lookback_days=lookback,
+    )
+    if not coverage.empty:
+        print("\nData coverage:")
+        cols = [c for c in ["asset", "timeframe", "candle_count",
+                            "coverage_days", "enough_for_walk_forward",
+                            "notes"] if c in coverage.columns]
+        print(coverage[cols].to_string(index=False))
+    print("\nSaved → results/data_coverage.csv")
     return 0
 
 
@@ -266,12 +291,321 @@ def cmd_monte_carlo(args: argparse.Namespace) -> int:
 
 def cmd_research_all(args: argparse.Namespace) -> int:
     utils.assert_paper_only()
-    bundle = research.run_all(
+    stages = list(args.stage) if args.stage else ["all"]
+    bundle = research.run_stages(
+        stages=stages,
         assets=args.assets, timeframes=args.timeframes, n_sim=args.n_sim,
+        skip_robustness=bool(getattr(args, "skip_robustness", False)),
+        strategy_filter=getattr(args, "strategy", None),
     )
-    print("\n=== research summary ===")
-    for check, v in bundle["summary"]["checks"].items():
-        print(f"  [{v['verdict']:<12}] {check}: {v['message']}")
+    summary = bundle.get("summary")
+    if summary is not None:
+        print("\n=== research summary ===")
+        for check, v in summary["checks"].items():
+            print(f"  [{v['verdict']:<12}] {check}: {v['message']}")
+    sc = bundle.get("scorecard_df")
+    if sc is not None and not sc.empty:
+        print("\n=== top scorecard rows ===")
+        cols = ["strategy_name", "asset", "timeframe", "total_score", "verdict"]
+        cols = [c for c in cols if c in sc.columns]
+        print(sc.head(10)[cols].to_string(index=False))
+    print(f"\nstages completed: {bundle.get('summary') is not None and 'all' or '(partial)'}")
+    print(f"see results/research_run_state.json for the per-stage timeline.")
+    return 0
+
+
+def cmd_regimes(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = research.regime_analysis(assets=args.assets, timeframes=args.timeframes)
+    if df.empty:
+        print("No regime rows produced — check candle availability.")
+        return 0
+    cols = [c for c in ["asset", "timeframe", "n_bars", "pct_bull",
+                        "pct_bear", "pct_sideways", "pct_high_vol",
+                        "pct_low_vol"] if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/regime_summary.csv "
+          f"(+ per-asset regime_<sym>_<tf>.csv files)")
+    return 0
+
+
+def _print_portfolio_metrics_dict(label: str, m: dict) -> None:
+    print(f"  {label:<30} return={m['total_return_pct']:+.2f}% "
+          f"dd={m['max_drawdown_pct']:.2f}% "
+          f"sharpe={m['sharpe_ratio']:.2f}")
+
+
+def cmd_portfolio_momentum(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = portfolio_research.run_portfolio_momentum(
+        assets=args.assets, timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"portfolio_momentum: {out.get('reason')}")
+        return 1
+    print("\n=== portfolio momentum vs benchmarks ===")
+    _print_portfolio_metrics_dict("momentum_rotation", out["metrics"])
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/portfolio_momentum_*.csv")
+    return 0
+
+
+def cmd_portfolio_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_research.portfolio_walk_forward(
+        assets=args.assets, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days,
+    )
+    if df.empty:
+        print("portfolio_walk_forward: no rows produced.")
+        return 1
+    cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+            "oos_return_pct", "oos_max_drawdown_pct", "btc_oos_return_pct",
+            "basket_oos_return_pct", "beats_btc", "beats_basket",
+            "n_rebalances", "avg_holdings"] if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/portfolio_walk_forward.csv ({len(df)} windows).")
+    return 0
+
+
+def cmd_portfolio_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_research.portfolio_placebo(
+        assets=args.assets, timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("portfolio_placebo: no rows produced.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== portfolio placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown"):
+        if k in summary:
+            print(f"  {k:<35} {summary[k]}")
+    print(f"\nSaved → results/portfolio_placebo_comparison.csv "
+          f"({args.n_seeds} seeds).")
+    return 0
+
+
+def cmd_portfolio_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_research.portfolio_scorecard()
+    if df.empty:
+        print("portfolio_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== portfolio scorecard ===")
+    for k in ("strategy_name", "n_windows", "verdict",
+              "avg_oos_return_pct", "avg_oos_drawdown_pct",
+              "pct_windows_beat_btc", "pct_windows_beat_basket",
+              "stability_score_pct", "total_rebalances",
+              "beats_placebo_median", "checks_passed", "checks_total",
+              "reason"):
+        if k in row:
+            print(f"  {k:<30} {row[k]}")
+    print(f"\nSaved → results/portfolio_scorecard.csv")
+    return 0
+
+
+def cmd_crypto_regime_signals(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = crypto_regime_signals.compute_regime_signals(
+        timeframe=args.timeframe, save=True,
+    )
+    if df.empty:
+        print("crypto_regime_signals: no rows produced (BTC data missing?)")
+        return 1
+    dist = crypto_regime_signals.regime_distribution(df)
+    print(f"crypto_regime_signals: {len(df)} rows.")
+    print(f"  span: {pd.to_datetime(df['datetime'].iloc[0]).date()} -> "
+          f"{pd.to_datetime(df['datetime'].iloc[-1]).date()}")
+    print(f"  risk_state distribution (% of bars): {dist}")
+    print(f"\nSaved → results/crypto_regime_signals.csv")
+    return 0
+
+
+def cmd_regime_aware_portfolio(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = portfolio_research.run_regime_aware_portfolio(
+        assets=args.assets, timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"regime_aware_portfolio: {out.get('reason')}")
+        return 1
+    print("\n=== regime-aware portfolio vs benchmarks (full window) ===")
+    _print_portfolio_metrics_dict(
+        "regime_aware_momentum_rotation", out["metrics"],
+    )
+    _print_portfolio_metrics_dict(
+        "momentum_rotation_simple", out["simple_metrics"],
+    )
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/regime_aware_portfolio_*.csv")
+    return 0
+
+
+def cmd_regime_aware_portfolio_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_research.regime_aware_portfolio_walk_forward(
+        assets=args.assets, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days,
+    )
+    if df.empty:
+        print("regime_aware_portfolio_walk_forward: no rows produced.")
+        return 1
+    cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+            "oos_return_pct", "btc_oos_return_pct", "basket_oos_return_pct",
+            "simple_oos_return_pct", "beats_btc", "beats_basket",
+            "beats_simple_momentum", "n_rebalances"] if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/regime_aware_portfolio_walk_forward.csv "
+          f"({len(df)} windows).")
+    return 0
+
+
+def cmd_regime_aware_portfolio_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_research.regime_aware_portfolio_placebo(
+        assets=args.assets, timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("regime_aware_portfolio_placebo: no rows.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== regime-aware placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown"):
+        if k in summary:
+            print(f"  {k:<35} {summary[k]}")
+    print(f"\nSaved → results/regime_aware_portfolio_placebo.csv")
+    return 0
+
+
+def cmd_regime_aware_portfolio_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_research.regime_aware_portfolio_scorecard()
+    if df.empty:
+        print("regime_aware_portfolio_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== regime-aware portfolio scorecard ===")
+    for k in ("strategy_name", "n_windows", "verdict",
+              "avg_oos_return_pct", "avg_oos_drawdown_pct",
+              "pct_windows_beat_btc", "pct_windows_beat_basket",
+              "pct_windows_beat_simple_momentum",
+              "stability_score_pct", "total_rebalances",
+              "beats_placebo_median", "checks_passed", "checks_total",
+              "reason"):
+        if k in row:
+            print(f"  {k:<32} {row[k]}")
+    print(f"\nSaved → results/regime_aware_portfolio_scorecard.csv")
+    return 0
+
+
+def cmd_audit_portfolio(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    summary = portfolio_audit.audit_all_portfolio()
+    cf = summary["cash_filter"]
+    print("=== portfolio cash filter audit ===")
+    if not cf.get("ok"):
+        print(f"  not ok: {cf.get('reason')}")
+        return 1
+    print(f"  BTC data span:               {cf['btc_data_first']} -> {cf['btc_data_last']}")
+    print(f"  Evaluable bars (post warmup): {cf['n_eval_bars_after_warmup']}")
+    print(f"  Bearish bars (close < 200d): {cf['n_bearish_bars']} ({cf['pct_bearish']}%)")
+    print(f"  First / last bearish:        {cf['first_bearish_date']} / {cf['last_bearish_date']}")
+    print(f"  Contiguous bearish spans:    {cf['n_contiguous_bearish_spans']} (longest {cf['longest_bearish_span_days']} days)")
+    print(f"  Weights file present:        {cf['weights_file_present']}")
+    for row in cf.get("cross_check", []):
+        print(f"  cross-check: {row['metric']:<60} {row['value']}")
+    print(f"\n=== benchmark alignment audit ===")
+    print(f"  rows audited:                {summary['benchmark_alignment_rows']}")
+    print(f"  BTC drift within tolerance:  {summary['benchmark_alignment_ok_btc']}")
+    print(f"  Basket drift within tol:     {summary['benchmark_alignment_ok_basket']}")
+    print(f"\n=== rebalance logic audit ===")
+    print(f"  all checks ok:               {summary['rebalance_audit_all_ok']}")
+    print(f"\nSaved → results/portfolio_cash_filter_audit.csv")
+    print(f"Saved → results/portfolio_benchmark_alignment_audit.csv")
+    print(f"Saved → results/portfolio_rebalance_audit.csv")
+    return 0
+
+
+def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = portfolio_research.run_all_portfolio(
+        assets=args.assets, timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, seeds=tuple(range(args.n_seeds)),
+    )
+    sc = out.get("scorecard")
+    if sc is not None and not sc.empty:
+        print("\n=== portfolio scorecard ===")
+        print(sc.to_string(index=False))
+    return 0
+
+
+def cmd_audit_oos(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    audit_df, summary_df = oos_audit.audit_walk_forward(save=True)
+    if audit_df.empty:
+        print("No walk_forward_by_strategy.csv found. "
+              "Run `python main.py research_all` first.")
+        return 1
+    print(f"OOS audit: {len(audit_df)} per-window rows, "
+          f"{len(summary_df)} (strategy, asset, timeframe) groups.")
+    if not summary_df.empty:
+        cols = ["strategy_name", "asset", "timeframe", "n_windows",
+                "stability_score_pct", "mean_trades_per_window",
+                "windows_overlap", "enough_windows_for_confidence", "notes"]
+        cols = [c for c in cols if c in summary_df.columns]
+        print(summary_df[cols].to_string(index=False))
+    print(f"\nSaved → results/oos_audit.csv "
+          f"and results/oos_audit_summary.csv")
+    return 0
+
+
+def cmd_placebo_audit(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = research.placebo_comparison(save=True)
+    if df.empty:
+        print("No placebo comparison rows. Run `python main.py research_all` "
+              "first to populate walk_forward_by_strategy.csv.")
+        return 1
+    cols = ["strategy_name", "asset", "timeframe",
+            "strategy_oos_stability", "placebo_oos_stability",
+            "strategy_mean_oos_return", "placebo_mean_oos_return",
+            "strategy_beats_placebo", "notes"]
+    cols = [c for c in cols if c in df.columns]
+    print(df[cols].to_string(index=False))
+    n_beat = int(df["strategy_beats_placebo"].sum())
+    print(f"\n{n_beat}/{len(df)} (strategy, asset, timeframe) rows beat the placebo.")
+    print("Saved → results/placebo_comparison.csv")
+    return 0
+
+
+def cmd_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    sc = research.build_scorecard_from_saved(save=True)
+    if sc.empty:
+        print("No scorecard rows. Run `python main.py compare_strategies` "
+              "first (and ideally walk_forward + robustness too).")
+        return 1
+    cols = ["strategy_name", "asset", "timeframe", "total_score", "verdict",
+            "benchmark_score", "walk_forward_score", "robustness_score",
+            "trade_count_score", "drawdown_score"]
+    cols = [c for c in cols if c in sc.columns]
+    print(sc.head(40)[cols].to_string(index=False))
+    print(f"\nSaved → results/strategy_scorecard.csv ({len(sc)} rows).")
     return 0
 
 
@@ -413,6 +747,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--assets", nargs="+", default=config.ASSETS)
     sp.add_argument("--timeframes", nargs="+", default=config.TIMEFRAMES)
     sp.add_argument("--days", type=int, default=config.DEFAULT_HISTORY_DAYS)
+    sp.add_argument("--lookback-days", type=int, default=None,
+                    dest="lookback_days",
+                    help="Alias for --days; takes precedence if both set.")
     sp.add_argument("--refresh", action="store_true",
                     help="Re-download even if cached.")
     sp.set_defaults(func=cmd_download)
@@ -477,6 +814,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--assets", nargs="+", default=research_assets_default)
     sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
     sp.add_argument("--n-sim", type=int, default=1000, dest="n_sim")
+    sp.add_argument(
+        "--stage", nargs="+", default=None,
+        help=("Run only specific stages. Choices: data_coverage, regimes, "
+              "strategy_comparison, walk_forward, robustness, scorecard, "
+              "monte_carlo, oos_audit, placebo_audit, summary. "
+              "Default = all stages in order. Repeat to run multiple."),
+    )
+    sp.add_argument(
+        "--skip-robustness", action="store_true", dest="skip_robustness",
+        help=("Skip the robustness sweep. Use this when iterating quickly "
+              "or when 1h data makes the sweep too slow."),
+    )
+    sp.add_argument(
+        "--strategy", default=None,
+        help=("Limit comparison + walk-forward + robustness to a single "
+              "strategy / family name (e.g. 'regime_selector')."),
+    )
     sp.set_defaults(func=cmd_research_all)
 
     # ----- Optional Kronos commands (lazy import; no-op if unavailable) ----
@@ -521,6 +875,113 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--base-strategy", default="rsi_ma_atr",
                     dest="base_strategy")
     sp.set_defaults(func=cmd_kronos_compare)
+
+    # ----- Regime + scorecard -----------------------------------------------
+    sp = sub.add_parser("regimes",
+                        help="Per (asset, timeframe) market regime distribution.")
+    sp.add_argument("--assets", nargs="+", default=research_assets_default)
+    sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
+    sp.set_defaults(func=cmd_regimes)
+
+    sp = sub.add_parser("scorecard",
+                        help="Rebuild strategy scorecard from saved CSVs.")
+    sp.set_defaults(func=cmd_scorecard)
+
+    # ----- Portfolio momentum rotation (multi-asset research) ---------------
+    portfolio_assets_default = list(config.EXPANDED_UNIVERSE)
+    portfolio_tf_default = "1d"
+
+    sp = sub.add_parser("portfolio_momentum",
+                        help="Run a single-window momentum rotation backtest "
+                             "over the expanded asset universe.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.set_defaults(func=cmd_portfolio_momentum)
+
+    sp = sub.add_parser("portfolio_walk_forward",
+                        help="Walk-forward the momentum rotation strategy.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.set_defaults(func=cmd_portfolio_walk_forward)
+
+    sp = sub.add_parser("portfolio_placebo",
+                        help="Compare momentum rotation vs random-rotation "
+                             "placebo across N seeds.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_portfolio_placebo)
+
+    sp = sub.add_parser("portfolio_scorecard",
+                        help="Build the portfolio scorecard from saved CSVs.")
+    sp.set_defaults(func=cmd_portfolio_scorecard)
+
+    sp = sub.add_parser("audit_portfolio",
+                        help="Audit cash filter, benchmark alignment, and "
+                             "rebalance logic of the saved portfolio results.")
+    sp.set_defaults(func=cmd_audit_portfolio)
+
+    # ----- Phase A: cross-asset regime + regime-aware momentum -------------
+    sp = sub.add_parser("crypto_regime_signals",
+                        help="Compute cross-asset regime signals over the "
+                             "expanded universe.")
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.set_defaults(func=cmd_crypto_regime_signals)
+
+    sp = sub.add_parser("regime_aware_portfolio",
+                        help="Single-window regime-aware portfolio backtest "
+                             "vs benchmarks.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.set_defaults(func=cmd_regime_aware_portfolio)
+
+    sp = sub.add_parser("regime_aware_portfolio_walk_forward",
+                        help="Walk-forward the regime-aware portfolio.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.set_defaults(func=cmd_regime_aware_portfolio_walk_forward)
+
+    sp = sub.add_parser("regime_aware_portfolio_placebo",
+                        help="Compare regime-aware vs regime-aware random "
+                             "placebo over N seeds.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_regime_aware_portfolio_placebo)
+
+    sp = sub.add_parser("regime_aware_portfolio_scorecard",
+                        help="Build the regime-aware portfolio scorecard "
+                             "from saved CSVs.")
+    sp.set_defaults(func=cmd_regime_aware_portfolio_scorecard)
+
+    sp = sub.add_parser("research_all_portfolio",
+                        help="Run portfolio momentum + walk-forward + "
+                             "placebo + scorecard end to end.")
+    sp.add_argument("--assets", nargs="+", default=portfolio_assets_default)
+    sp.add_argument("--timeframe", default=portfolio_tf_default)
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_research_all_portfolio)
+
+    sp = sub.add_parser("audit_oos",
+                        help="Audit walk-forward window mechanics.")
+    sp.set_defaults(func=cmd_audit_oos)
+
+    sp = sub.add_parser("placebo_audit",
+                        help="Compare every strategy's OOS stability and "
+                             "return against the random placebo.")
+    sp.set_defaults(func=cmd_placebo_audit)
 
     return p
 

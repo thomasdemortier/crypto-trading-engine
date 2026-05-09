@@ -55,9 +55,12 @@ def synthetic_cache(tmp_path, monkeypatch):
     yield raw
 
 
-def test_strategy_registry_has_four_entries():
+def test_strategy_registry_has_expected_entries():
     assert set(REGISTRY.keys()) == {
         "rsi_ma_atr", "buy_and_hold", "ma_cross", "breakout",
+        "trend_following", "pullback_continuation",
+        "sideways_mean_reversion", "regime_selector",
+        "placebo_random",
     }
 
 
