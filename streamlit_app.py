@@ -83,20 +83,49 @@ _CTE_CSS = """
   border: 1px solid var(--cte-border) !important;
   border-radius: 10px !important;
   background: rgba(15,23,42,0.6);
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] summary {
   font-weight: 600;
   color: var(--cte-text) !important;
+  padding: 0.55rem 0.7rem !important;
+}
+/* Sidebar buttons — explicit contrast against the sidebar surface so they
+   never disappear into the background. */
+[data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] .stDownloadButton > button {
+  background: #1e293b !important;
+  color: var(--cte-text) !important;
+  border: 1px solid #334155 !important;
+  font-weight: 600 !important;
+  min-height: 2.4rem;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+  border-color: var(--cte-accent) !important;
+  background: rgba(56,189,248,0.10) !important;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+  background: var(--cte-accent) !important;
+  color: #0a0e1a !important;
+  border-color: var(--cte-accent) !important;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+  background: #0ea5e9 !important; border-color: #0ea5e9 !important;
 }
 
-/* Native bordered containers — our "cards" */
+/* Native bordered containers — our "cards". Keep the chrome subtle so it
+   never collapses or hides inner widgets. */
 [data-testid="stVerticalBlockBorderWrapper"] {
   background: var(--cte-card);
   border: 1px solid var(--cte-border) !important;
   border-radius: 14px !important;
-  padding: 1rem 1.1rem !important;
   box-shadow: 0 1px 0 rgba(255,255,255,0.02), 0 6px 22px rgba(0,0,0,0.18);
+}
+/* Padding only on the direct content wrapper inside a bordered container —
+   never use !important padding on the wrapper itself, which can clip inner
+   tab panels and dataframes. */
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+  padding: 0.85rem 1rem;
 }
 
 /* Native st.metric polishing */
@@ -212,17 +241,40 @@ _CTE_CSS = """
 .kv-row .v.pos { color: var(--cte-pos); }
 .kv-row .v.neg { color: var(--cte-neg); }
 
-/* Tabs */
+/* Tabs — explicit underline indicator on the active tab so users can
+   actually see which panel is showing. */
 [data-baseweb="tab-list"] {
   border-bottom: 1px solid var(--cte-border) !important;
+  gap: 0.4rem;
 }
 [data-baseweb="tab"] {
   color: var(--cte-muted) !important;
   font-weight: 600 !important;
-  font-size: 0.92rem !important;
+  font-size: 0.93rem !important;
+  padding: 0.55rem 0.9rem !important;
+  background: transparent !important;
+  border-radius: 8px 8px 0 0 !important;
 }
+[data-baseweb="tab"]:hover { color: var(--cte-text) !important; }
 [data-baseweb="tab"][aria-selected="true"] {
   color: var(--cte-text) !important;
+  background: rgba(56,189,248,0.06) !important;
+  box-shadow: inset 0 -2px 0 var(--cte-accent);
+}
+[data-baseweb="tab-highlight"] { background: var(--cte-accent) !important; }
+[data-baseweb="tab-panel"] { padding-top: 0.9rem !important; }
+
+/* Selectbox & expander — give them visible borders on the dark surface. */
+[data-baseweb="select"] > div {
+  background: var(--cte-card-2) !important;
+  border: 1px solid var(--cte-border) !important;
+  border-radius: 8px !important;
+  color: var(--cte-text) !important;
+}
+[data-baseweb="select"] svg { color: var(--cte-muted) !important; }
+[data-testid="stMultiSelect"] [data-baseweb="tag"] {
+  background: rgba(56,189,248,0.12) !important;
+  color: var(--cte-accent) !important;
 }
 
 /* Buttons */
@@ -250,11 +302,20 @@ _CTE_CSS = """
   opacity: 0.45 !important;
 }
 
-/* Tables */
+/* Tables — DO NOT set overflow:hidden on the dataframe container, it clips
+   the virtualised scrolling region and hides the rows. Border only. */
 [data-testid="stDataFrame"] {
   border: 1px solid var(--cte-border);
   border-radius: 10px;
-  overflow: hidden;
+}
+[data-testid="stDataFrame"] [role="grid"] {
+  background: var(--cte-card-2) !important;
+}
+
+/* Inline alerts */
+[data-testid="stAlert"] {
+  border-radius: 10px !important;
+  border: 1px solid var(--cte-border-soft) !important;
 }
 
 /* Subtle separator */
@@ -827,7 +888,13 @@ with st.container(border=True):
         if not asset_choice:
             st.info("Pick at least one asset in the sidebar.")
         else:
-            which = st.selectbox("Asset", options=asset_choice, key="price_asset")
+            sel_col, _ = st.columns([1, 3])
+            with sel_col:
+                which = st.selectbox(
+                    "Asset for price chart",
+                    options=asset_choice, key="price_asset",
+                    help="Pick which asset's price + trade markers to plot.",
+                )
             price_df = _read_artifact(f"price_{utils.safe_symbol(which)}.csv")
             if price_df is None:
                 price_df = _safe_load_candles(which, timeframe)
@@ -894,7 +961,12 @@ with st.container(border=True):
         if per_asset_df.empty:
             st.info("Run a backtest with at least one asset to see the comparison.")
         else:
-            st.caption(f"{len(per_asset_df)} asset row(s).")
+            st.markdown(
+                f"<div class='section-sub'><b>{len(per_asset_df)} asset "
+                f"rows loaded</b> &middot; per-asset breakdown derived from "
+                f"closed trades.</div>",
+                unsafe_allow_html=True,
+            )
             comp_cols = [
                 "asset", "allocated_capital", "realized_pnl",
                 "realized_return_on_allocation_pct", "buy_and_hold_return_pct",
@@ -905,6 +977,7 @@ with st.container(border=True):
             st.dataframe(
                 per_asset_df[comp_cols],
                 use_container_width=True, hide_index=True,
+                height=min(80 + 38 * len(per_asset_df), 320),
             )
 
     with tab_trades:
@@ -917,13 +990,15 @@ with st.container(border=True):
                 "portfolio_value", "reason",
             ]
             display_cols = [c for c in display_cols if c in trades_df.columns]
-            st.caption(
-                f"{len(trades_df)} trade row(s) across "
-                f"{trades_df['asset'].nunique()} asset(s)."
+            n_assets_in_trades = int(trades_df['asset'].nunique())
+            st.markdown(
+                f"<div class='section-sub'><b>{len(trades_df)} trade rows "
+                f"loaded</b> &middot; across {n_assets_in_trades} asset(s).</div>",
+                unsafe_allow_html=True,
             )
             st.dataframe(
                 trades_df[display_cols],
-                use_container_width=True, height=320, hide_index=True,
+                use_container_width=True, height=360, hide_index=True,
             )
 
     with tab_decisions:
@@ -931,16 +1006,22 @@ with st.container(border=True):
             st.info("No decisions logged under current settings.")
         else:
             recent = decisions_df.tail(500)
-            st.caption(
-                f"{len(decisions_df)} total decisions — showing the most "
-                f"recent {len(recent)}. Full log available in **Downloads**."
+            st.markdown(
+                f"<div class='section-sub'><b>Showing latest {len(recent)} "
+                f"of {len(decisions_df)} decisions</b> &middot; full log "
+                f"available in <b>Downloads</b>.</div>",
+                unsafe_allow_html=True,
             )
             st.dataframe(
-                recent, use_container_width=True, height=320, hide_index=True,
+                recent, use_container_width=True, height=360, hide_index=True,
             )
 
     with tab_downloads:
-        st.caption("Export the most recent saved artifacts as CSV.")
+        st.markdown(
+            "<div class='section-sub'><b>Download exports</b> &middot; "
+            "current saved artifacts as CSV.</div>",
+            unsafe_allow_html=True,
+        )
         download_specs = [
             ("Metrics", "summary_metrics.csv", metrics_df,
              "Combined-portfolio summary metrics.",
