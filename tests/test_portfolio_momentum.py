@@ -30,7 +30,7 @@ def _csv_with_trend(symbol: str, timeframe: str, n: int = 800,
     vol = rng.uniform(100, 1_000, n)
     ts = pd.date_range("2023-01-01", periods=n, freq="1D", tz="UTC")
     df = pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts, "open": open_, "high": high, "low": low,
         "close": close, "volume": vol,
     })
@@ -130,7 +130,7 @@ def test_momentum_cash_filter_keeps_strategy_in_cash_when_btc_below_ma():
     eth = np.linspace(100, 200, n)
     ts = pd.date_range("2023-01-01", periods=n, freq="1D", tz="UTC")
     btc_df = pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts, "open": btc, "high": btc + 1, "low": btc - 1,
         "close": btc, "volume": 1.0,
     })
