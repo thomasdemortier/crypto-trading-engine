@@ -45,3 +45,7 @@ hf_cache/
 .cache/
 results/kronos_*.csv
 results/kronos_*.json
+
+# Generated research data caches
+data/futures/
+data/market_structure/
