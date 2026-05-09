@@ -1481,6 +1481,7 @@ with st.container(border=True):
     rl_tabs = st.tabs([
         "Timeframe comparison", "Walk-forward", "Strategy comparison",
         "Robustness checks", "Monte Carlo", "Research summary",
+        "Kronos confirmation",
     ])
 
     rl_tf_df = _research_csv("research_timeframe_comparison.csv")
@@ -1498,6 +1499,7 @@ with st.container(border=True):
         "robustness": "Checks whether small parameter changes break the result.",
         "monte_carlo": "Stress-tests trade-result randomness.",
         "summary": "Plain-English PASS / FAIL verdict.",
+        "kronos": "Optional ML confirmation layer. Local install only.",
     }
 
     def _explainer(key: str) -> None:
@@ -1819,6 +1821,254 @@ with st.container(border=True):
                 file_name="research_summary.csv",
                 mime="text/csv", key="dl_research_summary",
             )
+
+    # ---- Kronos confirmation (optional, local only) -------------------
+    with rl_tabs[6]:
+        _explainer("kronos")
+        st.warning(
+            "Kronos is experimental. It confirms or rejects strategy signals. "
+            "It is not a trading oracle.",
+            icon="⚠️",
+        )
+        # `src.ml.kronos_adapter` is safe to import — every heavy dep is lazy.
+        from src.ml import kronos_adapter as _kronos
+        kronos_status = _kronos.get_kronos_status()
+        if not kronos_status["available"]:
+            st.error("Kronos is not installed locally.", icon="🚫")
+            st.markdown(
+                "**Setup**\n\n"
+                "1. Clone Kronos outside this project:\n"
+                "   ```bash\n"
+                "   git clone https://github.com/shiyu-coder/Kronos.git external/Kronos\n"
+                "   # or set:\n"
+                "   export KRONOS_REPO_PATH=\"/path/to/Kronos\"\n"
+                "   ```\n"
+                "2. Install optional ML dependencies:\n"
+                "   ```bash\n"
+                "   pip install -r requirements-ml.txt\n"
+                "   ```\n"
+                "3. Verify:\n"
+                "   ```bash\n"
+                "   python main.py kronos_status\n"
+                "   ```"
+            )
+            with st.expander("Diagnostic details", expanded=False):
+                st.json(kronos_status)
+        else:
+            st.success(
+                f"Kronos available — model: {kronos_status['default_model']}",
+                icon="✅",
+            )
+            kc1, kc2, kc3 = st.columns(3)
+            kronos_model = kc1.selectbox(
+                "Model", options=kronos_status["supported_models"], index=0,
+                help="Kronos-mini is the smallest and fastest. Use it first.",
+            )
+            kronos_device = kc2.selectbox(
+                "Device", options=["cpu", "mps", "cuda:0"], index=0,
+                help="CPU works everywhere but is slow.",
+            )
+            kronos_asset = kc3.selectbox(
+                "Asset", options=asset_choice or list(config.ASSETS),
+                help="Which asset to forecast.",
+            )
+            kc4, kc5, kc6, kc7 = st.columns(4)
+            kronos_tf = kc4.selectbox(
+                "Timeframe", options=config.TIMEFRAMES,
+                index=config.TIMEFRAMES.index(config.DEFAULT_TIMEFRAME),
+            )
+            kronos_lookback = kc5.number_input(
+                "Lookback candles", min_value=50, max_value=2048,
+                value=400, step=50,
+            )
+            kronos_pred_len = kc6.number_input(
+                "Prediction length", min_value=4, max_value=128,
+                value=24, step=1,
+            )
+            kronos_buy_thr = kc7.number_input(
+                "Buy confirm threshold (%)", min_value=0.0, max_value=10.0,
+                value=1.0, step=0.5,
+                help=("Forecast return % required to CONFIRM a BUY. "
+                      "Below 0 = REJECT, between 0 and threshold = NEUTRAL."),
+            )
+
+            st.caption(
+                "All Kronos work runs synchronously on CPU by default. The "
+                "first run downloads model weights to the Hugging Face cache."
+            )
+            kbtn1, kbtn2, kbtn3 = st.columns(3)
+            do_kronos_eval = kbtn1.button(
+                "Run forecast evaluation", use_container_width=True,
+                key="kronos_eval_btn",
+            )
+            do_kronos_confirm = kbtn2.button(
+                "Generate confirmations", use_container_width=True,
+                key="kronos_confirm_btn",
+            )
+            do_kronos_compare = kbtn3.button(
+                "Compare base vs Kronos-confirmed", use_container_width=True,
+                key="kronos_compare_btn",
+            )
+
+            if do_kronos_eval:
+                from src.ml import forecast_evaluation as _fe
+                with st.spinner("Running Kronos evaluation… (CPU, slow)"):
+                    try:
+                        df = _fe.evaluate_kronos_forecasts(
+                            asset=kronos_asset, timeframe=kronos_tf,
+                            model_name=kronos_model,
+                            lookback=int(kronos_lookback),
+                            pred_len=int(kronos_pred_len),
+                            step=int(kronos_pred_len),
+                            max_windows=10, device=kronos_device,
+                        )
+                        _queue_flash("success",
+                                     f"Kronos evaluation complete — {len(df)} windows.")
+                        st.rerun()
+                    except Exception as e:
+                        _queue_flash("error", f"Kronos evaluation failed: {e}")
+                        st.rerun()
+
+            if do_kronos_confirm:
+                from src.ml import kronos_confirmation as _kc
+                fe_path = config.RESULTS_DIR / "kronos_forecast_evaluation.csv"
+                if not fe_path.exists():
+                    _queue_flash("warning",
+                                 "Run **Run forecast evaluation** first.")
+                    st.rerun()
+                else:
+                    with st.spinner("Generating confirmations…"):
+                        try:
+                            from src.strategies import REGISTRY as _STRATS
+                            art = backtester.run_backtest(
+                                assets=[kronos_asset], timeframe=kronos_tf,
+                                save=False, strategy=_STRATS["rsi_ma_atr"](),
+                            )
+                            decisions = art.decisions.copy()
+                            decisions["timeframe"] = kronos_tf
+                            base_signals = decisions[
+                                ["timestamp_ms", "asset", "timeframe", "action"]
+                            ]
+                            fe_df = pd.read_csv(fe_path)
+                            _kc.generate_kronos_confirmations(
+                                base_signals_df=base_signals,
+                                forecast_eval_df=fe_df,
+                                buy_confirm_threshold_pct=float(kronos_buy_thr),
+                            )
+                            _queue_flash("success",
+                                         "Kronos confirmations saved.")
+                            st.rerun()
+                        except Exception as e:
+                            _queue_flash("error",
+                                         f"Confirmation generation failed: {e}")
+                            st.rerun()
+
+            if do_kronos_compare:
+                from src.ml import forecast_evaluation as _fe
+                with st.spinner("Running base vs Kronos-confirmed backtest…"):
+                    try:
+                        _fe.compare_base_vs_kronos_confirmed(
+                            asset=kronos_asset, timeframe=kronos_tf,
+                            base_strategy_name="rsi_ma_atr",
+                        )
+                        _queue_flash("success",
+                                     "Base vs Kronos comparison saved.")
+                        st.rerun()
+                    except Exception as e:
+                        _queue_flash("error", f"Comparison failed: {e}")
+                        st.rerun()
+
+        # ---- Tables + downloads (always visible if files exist) ----------
+        kronos_eval_df = _research_csv("kronos_forecast_evaluation.csv")
+        kronos_confirm_df = _research_csv("kronos_confirmations.csv")
+        kronos_compare_df = _research_csv("kronos_confirmation_comparison.csv")
+        kronos_forecast_df = _research_csv("kronos_forecast.csv")
+
+        if not kronos_eval_df.empty:
+            from src.ml.forecast_evaluation import summarise_forecast_evaluation
+            summary = summarise_forecast_evaluation(kronos_eval_df)
+            if summary.get("ok"):
+                kc = st.columns(4)
+                kc[0].metric("Windows", str(summary["n_windows"]))
+                kc[1].metric(
+                    "Direction accuracy",
+                    f"{summary['direction_accuracy_pct']:.1f}%",
+                )
+                kc[2].metric(
+                    "MAPE", f"{summary['mape_pct']:.2f}%",
+                    help="Mean absolute % error of forecast vs actual return.",
+                )
+                kc[3].metric(
+                    "Worst miss", f"{summary['worst_abs_error_pct']:.2f}%",
+                )
+            st.markdown("**Forecast evaluation**")
+            st.dataframe(
+                kronos_eval_df, use_container_width=True,
+                hide_index=True, height=240,
+            )
+
+        if not kronos_confirm_df.empty:
+            st.markdown("**Confirmations**")
+            counts = kronos_confirm_df["confirmation"].value_counts().to_dict()
+            st.caption(f"Verdict counts: {counts}")
+            st.dataframe(
+                kronos_confirm_df, use_container_width=True,
+                hide_index=True, height=240,
+            )
+
+        if not kronos_compare_df.empty:
+            st.markdown("**Base vs Kronos-confirmed**")
+            cols = [c for c in ["variant", "total_return_pct",
+                    "buy_and_hold_return_pct", "strategy_vs_bh_pct",
+                    "max_drawdown_pct", "num_trades", "profit_factor",
+                    "fees_paid", "exposure_time_pct", "sharpe_ratio"]
+                    if c in kronos_compare_df.columns]
+            st.dataframe(
+                _style_vs_bh(kronos_compare_df[cols].copy()),
+                use_container_width=True, hide_index=True, height=180,
+            )
+            # Quick honest readout: did Kronos help?
+            try:
+                base_row = kronos_compare_df.iloc[0]
+                k_row = kronos_compare_df.iloc[1]
+                base_vs = float(base_row["strategy_vs_bh_pct"])
+                k_vs = float(k_row["strategy_vs_bh_pct"])
+                k_trades = int(k_row["num_trades"])
+                base_trades = int(base_row["num_trades"])
+                if k_vs > base_vs and k_trades > 0:
+                    st.success(
+                        f"Kronos confirmation improved vs B&H by "
+                        f"{k_vs - base_vs:+.2f}%.",
+                    )
+                else:
+                    st.warning(
+                        "Kronos did not improve vs B&H. Reduced trades "
+                        f"({base_trades} → {k_trades}) without an edge gain.",
+                    )
+            except Exception:
+                pass
+
+        kdl = st.columns(4)
+        for i, (label, name, df) in enumerate([
+            ("Forecast", "kronos_forecast.csv", kronos_forecast_df),
+            ("Evaluation", "kronos_forecast_evaluation.csv", kronos_eval_df),
+            ("Confirmations", "kronos_confirmations.csv", kronos_confirm_df),
+            ("Comparison", "kronos_confirmation_comparison.csv",
+             kronos_compare_df),
+        ]):
+            with kdl[i]:
+                if df is not None and not df.empty:
+                    st.download_button(
+                        f"{label} CSV", _df_to_csv_bytes(df),
+                        file_name=name, mime="text/csv",
+                        key=f"dl_kronos_{i}", use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        f"{label} CSV (unavailable)", disabled=True,
+                        key=f"dl_kronos_{i}_disabled",
+                        use_container_width=True,
+                    )
 
 
 # ---------------------------------------------------------------------------

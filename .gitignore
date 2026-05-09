@@ -32,3 +32,16 @@ results/*.json
 !data/processed/.gitkeep
 !logs/.gitkeep
 !results/.gitkeep
+
+# Optional ML / Kronos artifacts — never commit weights or the upstream repo.
+external/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+models/
+hf_cache/
+.cache/
+results/kronos_*.csv
+results/kronos_*.json

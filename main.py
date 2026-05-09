@@ -13,6 +13,11 @@ Usage:
     python main.py robustness
     python main.py monte_carlo
     python main.py research_all
+    python main.py kronos_status
+    python main.py kronos_forecast
+    python main.py kronos_evaluate
+    python main.py kronos_confirm
+    python main.py kronos_compare
 """
 
 from __future__ import annotations
@@ -270,6 +275,135 @@ def cmd_research_all(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Optional Kronos commands. These import the ML adapter lazily so users
+# without `requirements-ml.txt` installed can still see `python main.py
+# --help` and the non-Kronos commands.
+# ---------------------------------------------------------------------------
+def _print_kronos_install_hint() -> None:
+    print("To enable Kronos locally:")
+    print("  pip install -r requirements-ml.txt")
+    print("  git clone https://github.com/shiyu-coder/Kronos.git external/Kronos")
+    print("  python main.py kronos_status")
+
+
+def cmd_kronos_status(args: argparse.Namespace) -> int:
+    from src.ml import kronos_adapter
+    status = kronos_adapter.get_kronos_status()
+    print("=== Kronos status ===")
+    for k, v in status.items():
+        print(f"  {k:<28} {v}")
+    if not status["available"]:
+        print()
+        _print_kronos_install_hint()
+    return 0
+
+
+def cmd_kronos_forecast(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    from src.ml import kronos_adapter
+    if not kronos_adapter.kronos_available():
+        print("Kronos not available. Status:")
+        for k, v in kronos_adapter.get_kronos_status().items():
+            print(f"  {k:<28} {v}")
+        _print_kronos_install_hint()
+        return 1
+    candles = data_collector.load_candles(args.asset, args.timeframe)
+    pred_df = kronos_adapter.run_kronos_forecast(
+        candles=candles, timeframe=args.timeframe,
+        model_name=args.model, lookback=args.lookback,
+        pred_len=args.pred_len, device=args.device,
+    )
+    out_path = config.RESULTS_DIR / "kronos_forecast.csv"
+    utils.write_df(pred_df, out_path)
+    print(f"Forecast saved to {out_path} ({len(pred_df)} rows).")
+    if "close" in pred_df.columns and not pred_df.empty:
+        last_close = float(candles["close"].iloc[-1])
+        f_close = float(pred_df["close"].iloc[-1])
+        print(f"  current close : {last_close:.2f}")
+        print(f"  forecast close: {f_close:.2f}")
+        print(f"  forecast Δ%   : {(f_close / last_close - 1) * 100:+.2f}%")
+    return 0
+
+
+def cmd_kronos_evaluate(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    from src.ml import kronos_adapter, forecast_evaluation
+    if not kronos_adapter.kronos_available():
+        print("Kronos not available — aborting evaluation.")
+        _print_kronos_install_hint()
+        return 1
+    df = forecast_evaluation.evaluate_kronos_forecasts(
+        asset=args.asset, timeframe=args.timeframe,
+        model_name=args.model, lookback=args.lookback,
+        pred_len=args.pred_len, step=args.step,
+        max_windows=args.max_windows, device=args.device,
+    )
+    summary = forecast_evaluation.summarise_forecast_evaluation(df)
+    print(f"\nKronos evaluation: {summary}")
+    print(f"Saved → results/kronos_forecast_evaluation.csv ({len(df)} windows).")
+    return 0
+
+
+def cmd_kronos_confirm(args: argparse.Namespace) -> int:
+    """Generate confirmations from the saved forecast evaluation. This step
+    does NOT require Kronos to be installed — it only needs an existing
+    forecast_evaluation CSV and a base-signals CSV (auto-generated from a
+    fresh backtest if missing)."""
+    utils.assert_paper_only()
+    from src.ml import kronos_confirmation
+    fe_path = config.RESULTS_DIR / "kronos_forecast_evaluation.csv"
+    if not fe_path.exists():
+        print(f"Forecast evaluation CSV not found at {fe_path}. "
+              "Run `python main.py kronos_evaluate` first.")
+        return 1
+    fc_eval_df = pd.read_csv(fe_path)
+
+    # Build a base-signals frame by re-running the backtester for the chosen
+    # base strategy and reading its decisions log.
+    from src.strategies import REGISTRY as _STRATS
+    if args.base_strategy not in _STRATS:
+        print(f"Unknown base strategy {args.base_strategy!r}. "
+              f"Known: {list(_STRATS)}")
+        return 2
+    art = backtester.run_backtest(
+        assets=[args.asset], timeframe=args.timeframe, save=False,
+        strategy=_STRATS[args.base_strategy](),
+    )
+    decisions = art.decisions.copy()
+    if decisions.empty:
+        print("Base backtest produced no decisions to confirm.")
+        return 3
+    decisions = decisions.rename(columns={"timestamp_ms": "timestamp_ms"})
+    decisions["timeframe"] = args.timeframe
+    base_signals = decisions[["timestamp_ms", "asset", "timeframe", "action"]].copy()
+    confirmations = kronos_confirmation.generate_kronos_confirmations(
+        base_signals_df=base_signals,
+        forecast_eval_df=fc_eval_df,
+    )
+    print(f"Generated {len(confirmations)} confirmations.")
+    print(confirmations["confirmation"].value_counts().to_string())
+    print(f"Saved → results/kronos_confirmations.csv")
+    return 0
+
+
+def cmd_kronos_compare(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    from src.ml import forecast_evaluation
+    df = forecast_evaluation.compare_base_vs_kronos_confirmed(
+        asset=args.asset, timeframe=args.timeframe,
+        base_strategy_name=args.base_strategy,
+    )
+    print("\nBase vs Kronos-confirmed:")
+    cols = ["variant", "total_return_pct", "buy_and_hold_return_pct",
+            "strategy_vs_bh_pct", "max_drawdown_pct", "num_trades",
+            "profit_factor", "fees_paid"]
+    cols = [c for c in cols if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/kronos_confirmation_comparison.csv")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="crypto_trading_engine",
                                 description="Research-only BTC/ETH backtester.")
@@ -344,6 +478,49 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
     sp.add_argument("--n-sim", type=int, default=1000, dest="n_sim")
     sp.set_defaults(func=cmd_research_all)
+
+    # ----- Optional Kronos commands (lazy import; no-op if unavailable) ----
+    sp = sub.add_parser("kronos_status",
+                        help="Check optional Kronos availability and config.")
+    sp.set_defaults(func=cmd_kronos_status)
+
+    sp = sub.add_parser("kronos_forecast",
+                        help="Run one Kronos forecast on the latest candles.")
+    sp.add_argument("--asset", default="BTC/USDT")
+    sp.add_argument("--timeframe", default=config.DEFAULT_TIMEFRAME)
+    sp.add_argument("--model", default="Kronos-mini")
+    sp.add_argument("--lookback", type=int, default=400)
+    sp.add_argument("--pred-len", type=int, default=24, dest="pred_len")
+    sp.add_argument("--device", default="cpu")
+    sp.set_defaults(func=cmd_kronos_forecast)
+
+    sp = sub.add_parser("kronos_evaluate",
+                        help="Rolling-window Kronos forecast evaluation.")
+    sp.add_argument("--asset", default="BTC/USDT")
+    sp.add_argument("--timeframe", default=config.DEFAULT_TIMEFRAME)
+    sp.add_argument("--model", default="Kronos-mini")
+    sp.add_argument("--lookback", type=int, default=400)
+    sp.add_argument("--pred-len", type=int, default=24, dest="pred_len")
+    sp.add_argument("--step", type=int, default=24)
+    sp.add_argument("--max-windows", type=int, default=20, dest="max_windows")
+    sp.add_argument("--device", default="cpu")
+    sp.set_defaults(func=cmd_kronos_evaluate)
+
+    sp = sub.add_parser("kronos_confirm",
+                        help="Generate kronos_confirmations.csv from saved evaluation.")
+    sp.add_argument("--asset", default="BTC/USDT")
+    sp.add_argument("--timeframe", default=config.DEFAULT_TIMEFRAME)
+    sp.add_argument("--base-strategy", default="rsi_ma_atr",
+                    dest="base_strategy")
+    sp.set_defaults(func=cmd_kronos_confirm)
+
+    sp = sub.add_parser("kronos_compare",
+                        help="Backtest base vs Kronos-confirmed wrapper.")
+    sp.add_argument("--asset", default="BTC/USDT")
+    sp.add_argument("--timeframe", default=config.DEFAULT_TIMEFRAME)
+    sp.add_argument("--base-strategy", default="rsi_ma_atr",
+                    dest="base_strategy")
+    sp.set_defaults(func=cmd_kronos_compare)
 
     return p
 

@@ -125,9 +125,63 @@ Streamlit Cloud.
 9. Deployment hardening: rate-limit guards, retries with backoff,
    per-exchange symbol sanity checks.
 
+## Optional Kronos research
+
+Kronos is an optional, **local-only** ML confirmation layer for the
+rule-based strategy signals. It is experimental, opt-in, and **not** part
+of the deployed Streamlit Cloud app.
+
+* Kronos is optional — the dashboard, backtester and Research Lab work
+  without it.
+* It is experimental — treat its forecasts as confirmation hints, not
+  truth.
+* It is not live trading — Kronos never places orders.
+* It does not replace the risk engine — every signal still goes through
+  fees, slippage, position caps, and stop-loss.
+* It confirms / rejects existing rule-based signals — the wrapper strategy
+  keeps a base BUY only if Kronos agrees, etc.
+* It requires local setup — model weights are pulled from Hugging Face on
+  first use; do not commit them.
+
+### Setup (local only)
+
+```bash
+# 1. Optional ML deps (NOT in main requirements.txt)
+pip install -r requirements-ml.txt
+
+# 2. Clone the official Kronos repo outside this project
+mkdir -p external
+git clone https://github.com/shiyu-coder/Kronos.git external/Kronos
+# or set:  export KRONOS_REPO_PATH="/path/to/Kronos"
+
+# 3. Verify
+python main.py kronos_status
+```
+
+### Running Kronos research
+
+```bash
+python main.py kronos_forecast --asset BTC/USDT --timeframe 4h --model Kronos-mini
+python main.py kronos_evaluate --asset BTC/USDT --timeframe 4h --max-windows 10
+python main.py kronos_confirm  --asset BTC/USDT --timeframe 4h
+python main.py kronos_compare  --asset BTC/USDT --timeframe 4h
+```
+
+The Streamlit Research Lab also exposes a "Kronos confirmation" tab when
+the optional dependencies are installed locally. **Kronos should be tested
+locally first because model loading may be heavy** — do not enable it on
+Streamlit Cloud.
+
+The `external/`, `*.safetensors`, `*.bin`, `*.pt`, `models/`, `hf_cache/`
+and `results/kronos_*` paths are all gitignored — model weights and the
+upstream Kronos repo are never committed.
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.
 * No code path imports private ccxt methods or accepts API keys.
+* Kronos modules use lazy imports — `torch` / `transformers` / Hugging
+  Face are NEVER imported at app startup, so the dashboard still loads
+  on Streamlit Cloud without `requirements-ml.txt`.
 * If you need live execution later, write a **separate**, audited
   execution module — do not graft it into the existing engine.

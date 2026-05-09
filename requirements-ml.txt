@@ -1,0 +1,21 @@
+# Optional ML dependencies for the Kronos research layer.
+#
+# DO NOT install these on Streamlit Cloud — the deployed dashboard works
+# without them. They are local-only because:
+#   * `torch` and friends are heavy (~200MB+) and slow to load.
+#   * Kronos itself is not pip-installable; it must be cloned separately.
+#
+# To enable Kronos locally:
+#   pip install -r requirements-ml.txt
+#   git clone https://github.com/shiyu-coder/Kronos.git external/Kronos
+#   python main.py kronos_status
+#
+# Kronos itself is loaded from the official shiyu-coder/Kronos repository.
+# Clone it outside this repo or set KRONOS_REPO_PATH.
+
+torch
+transformers
+huggingface_hub
+accelerate
+einops
+safetensors
