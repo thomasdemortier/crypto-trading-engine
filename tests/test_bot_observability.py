@@ -65,21 +65,19 @@ def test_status_history_appends_safely():
 
 def test_status_history_dedupes_identical_timestamp(monkeypatch):
     """Two `record_status` calls with the same timestamp must collapse
-    to one row, not duplicate."""
-    frozen_ts = pd.Timestamp("2026-05-09T18:54:16+00:00")
-
-    class _FakeTS(pd.Timestamp):
-        @classmethod
-        def utcnow(cls):
-            return frozen_ts
-
-    monkeypatch.setattr(bot_status_history.pd, "Timestamp", _FakeTS)
+    to one row, not duplicate. We monkey-patch the module's
+    `_utcnow_iso` indirection rather than subclassing pandas'
+    `pd.Timestamp` (subclassing the Cython class fails on Python 3.12
+    + pandas 2.2+ with `TypeError: type ... is not an acceptable base
+    type`)."""
+    frozen_iso = "2026-05-09T18:54:16+00:00"
+    monkeypatch.setattr(bot_status_history, "_utcnow_iso",
+                         lambda: frozen_iso)
     bot_status_history.record_status(save=True)
     df = bot_status_history.record_status(save=True)
-    iso = frozen_ts.isoformat()
     # Only one row should carry that exact iso — the second call should
     # have replaced the first, not appended.
-    assert (df["timestamp"] == iso).sum() == 1
+    assert (df["timestamp"] == frozen_iso).sum() == 1
     assert len(df) == 1
 
 
