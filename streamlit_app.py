@@ -24,7 +24,7 @@ import streamlit as st
 
 from src import (
     config, backtester, data_collector, paper_trader,
-    performance, plotting, utils,
+    performance, plotting, research, utils,
 )
 
 
@@ -537,6 +537,22 @@ with st.sidebar.expander("Actions", expanded=True):
               "paper-trader state are not touched."),
     )
 
+with st.sidebar.expander("Research lab", expanded=False):
+    do_run_research = st.button(
+        "Run research lab", use_container_width=True,
+        help=("Run timeframe comparison, walk-forward, strategy comparison, "
+              "robustness checks, and Monte Carlo. Saves CSVs to results/."),
+    )
+    do_refresh_research = st.button(
+        "Refresh research results", use_container_width=True,
+        help="Reload saved research CSVs from disk into the dashboard.",
+    )
+    research_tfs = st.multiselect(
+        "Timeframes to research", options=config.TIMEFRAMES,
+        default=[config.DEFAULT_TIMEFRAME],
+        help="Pick which cached timeframes the research lab should use.",
+    )
+
 st.sidebar.caption(
     "Paper-only research tool. No live trading. No API keys are accepted."
 )
@@ -688,6 +704,31 @@ if do_clear:
             f"Saved results cleared ({removed} file(s)). "
             "Run a new backtest.",
         )
+    st.rerun()
+
+if do_run_research:
+    if not research_tfs:
+        _queue_flash("warning",
+                     "Pick at least one timeframe in the Research lab section.")
+        st.rerun()
+    else:
+        with st.spinner("Running research lab… this may take a minute."):
+            try:
+                research.run_all(
+                    assets=tuple(asset_choice or config.ASSETS),
+                    timeframes=tuple(research_tfs),
+                )
+                st.session_state["last_research_run_iso"] = _now_utc_iso()
+                _queue_flash("success",
+                             "Research lab completed — results saved to "
+                             "results/research_*.csv.")
+                st.rerun()
+            except Exception as e:
+                _queue_flash("error", f"Research lab failed: {e}")
+                st.rerun()
+
+if do_refresh_research:
+    _queue_flash("success", "Research results reloaded from saved CSVs.")
     st.rerun()
 
 
@@ -1180,6 +1221,363 @@ with st.container(border=True):
                             use_container_width=True,
                         )
                         st.caption(f":grey[{missing_msg}]")
+
+
+# ---------------------------------------------------------------------------
+# Research Lab — phases 1-6 surfaced as a single card with 6 tabs
+# ---------------------------------------------------------------------------
+def _research_csv(name: str) -> pd.DataFrame:
+    return _df_or_empty(_read_artifact(name))
+
+
+def _color_vs_bh(val: float) -> str:
+    """Inline CSS background for the strategy_vs_bh_pct cell."""
+    if pd.isna(val): return ""
+    if val > 0:  return "background-color: rgba(16,185,129,0.18); color:#a7f3d0;"
+    if val < 0:  return "background-color: rgba(244,63,94,0.18); color:#fecdd3;"
+    return ""
+
+
+def _style_vs_bh(df: pd.DataFrame, col: str = "strategy_vs_bh_pct"):
+    if col not in df.columns:
+        return df
+    return df.style.map(_color_vs_bh, subset=[col])
+
+
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>Research lab</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>Five honest research lenses + a "
+        "PASS/FAIL/INCONCLUSIVE summary. None of these tabs optimise "
+        "parameters or pick a winner — they only measure the fixed "
+        "strategy as configured. Run <b>Run research lab</b> in the "
+        "sidebar to populate.</div>",
+        unsafe_allow_html=True,
+    )
+
+    rl_tabs = st.tabs([
+        "Timeframe comparison", "Walk-forward", "Strategy comparison",
+        "Robustness checks", "Monte Carlo", "Research summary",
+    ])
+
+    rl_tf_df = _research_csv("research_timeframe_comparison.csv")
+    rl_wf_df = _research_csv("walk_forward_results.csv")
+    rl_sc_df = _research_csv("strategy_comparison.csv")
+    rl_rb_df = _research_csv("robustness_results.csv")
+    rl_mc_df = _research_csv("monte_carlo_results.csv")
+    rl_mcs_df = _research_csv("monte_carlo_simulations.csv")
+
+    # ---- Timeframe comparison -----------------------------------------
+    with rl_tabs[0]:
+        if rl_tf_df.empty:
+            st.info("No timeframe-comparison results yet. Run **Run research "
+                    "lab** in the sidebar.")
+        else:
+            ok = rl_tf_df[rl_tf_df["error"].isna()] if "error" in rl_tf_df.columns else rl_tf_df
+            n_ok = len(ok)
+            n_skipped = len(rl_tf_df) - n_ok
+            wins = int((ok["strategy_vs_bh_pct"] > 0).sum()) if not ok.empty else 0
+            st.markdown(
+                f"<div class='section-sub'><b>{n_ok} runs ok · "
+                f"{n_skipped} skipped</b> &middot; strategy beat B&amp;H in "
+                f"<b>{wins}/{n_ok}</b> combinations.</div>",
+                unsafe_allow_html=True,
+            )
+            low_trades = ok[ok["num_trades"] < research.MIN_TRADES_FOR_CONFIDENCE]
+            if not low_trades.empty:
+                st.warning(
+                    f"{len(low_trades)} of {n_ok} runs have fewer than "
+                    f"{research.MIN_TRADES_FOR_CONFIDENCE} closed trades — "
+                    f"those rows are statistically thin.",
+                )
+            cols = [c for c in ["asset", "timeframe", "total_return_pct",
+                    "buy_and_hold_return_pct", "strategy_vs_bh_pct",
+                    "max_drawdown_pct", "win_rate_pct", "num_trades",
+                    "profit_factor", "fees_paid", "exposure_time_pct",
+                    "sharpe_ratio", "sortino_ratio", "calmar_ratio"]
+                    if c in ok.columns]
+            st.dataframe(
+                _style_vs_bh(ok[cols].copy()),
+                use_container_width=True, hide_index=True, height=320,
+            )
+            st.download_button(
+                "Download research_timeframe_comparison.csv",
+                _df_to_csv_bytes(rl_tf_df),
+                file_name="research_timeframe_comparison.csv",
+                mime="text/csv", key="dl_research_tf",
+            )
+
+    # ---- Walk-forward --------------------------------------------------
+    with rl_tabs[1]:
+        if rl_wf_df.empty:
+            st.info("No walk-forward results yet. Run **Run research lab**.")
+        else:
+            ok = rl_wf_df[rl_wf_df["error"].isna()] if "error" in rl_wf_df.columns else rl_wf_df
+            n_ok = len(ok)
+            if n_ok == 0:
+                st.warning("All walk-forward windows were skipped — see "
+                           "the saved CSV for reasons.")
+            else:
+                wins = int(((ok["strategy_return_pct"] > 0)
+                            & (ok["strategy_vs_bh_pct"] > 0)).sum())
+                stability = wins / n_ok * 100.0
+                avg_oos = float(ok["strategy_return_pct"].mean())
+                worst = float(ok["strategy_return_pct"].min())
+                best = float(ok["strategy_return_pct"].max())
+                cwf = st.columns(5)
+                cwf[0].metric("OOS windows", str(n_ok))
+                cwf[1].metric("Avg OOS return", f"{avg_oos:+.2f}%")
+                cwf[2].metric("Worst OOS", f"{worst:+.2f}%")
+                cwf[3].metric("Best OOS", f"{best:+.2f}%")
+                cwf[4].metric(
+                    "Stability score", f"{stability:.0f}%",
+                    "% windows profitable AND beat B&H",
+                )
+                if stability < 50:
+                    st.warning(
+                        f"Stability score {stability:.0f}% — strategy is "
+                        f"NOT robust across out-of-sample periods.",
+                    )
+                cols = [c for c in ["asset", "timeframe", "window",
+                        "oos_start_iso", "oos_end_iso",
+                        "strategy_return_pct", "buy_and_hold_return_pct",
+                        "strategy_vs_bh_pct", "max_drawdown_pct",
+                        "win_rate_pct", "num_trades", "profit_factor"]
+                        if c in ok.columns]
+                st.dataframe(
+                    _style_vs_bh(ok[cols].copy()),
+                    use_container_width=True, hide_index=True, height=340,
+                )
+            st.download_button(
+                "Download walk_forward_results.csv",
+                _df_to_csv_bytes(rl_wf_df),
+                file_name="walk_forward_results.csv",
+                mime="text/csv", key="dl_research_wf",
+            )
+
+    # ---- Strategy comparison -------------------------------------------
+    with rl_tabs[2]:
+        if rl_sc_df.empty:
+            st.info("No strategy-comparison results yet.")
+        else:
+            ok = rl_sc_df[rl_sc_df["error"].isna()] if "error" in rl_sc_df.columns else rl_sc_df
+            st.markdown(
+                f"<div class='section-sub'><b>{len(ok)} rows</b> &middot; "
+                f"all strategies use the same risk engine, fees, slippage, "
+                f"and next-bar-open fills.</div>",
+                unsafe_allow_html=True,
+            )
+            if not ok.empty:
+                # Aggregate per strategy
+                agg = ok.groupby("strategy").agg(
+                    mean_return=("total_return_pct", "mean"),
+                    mean_vs_bh=("strategy_vs_bh_pct", "mean"),
+                    mean_dd=("max_drawdown_pct", "mean"),
+                    mean_sharpe=("sharpe_ratio", "mean"),
+                    total_trades=("num_trades", "sum"),
+                ).reset_index()
+                best_sharpe = agg.loc[agg["mean_sharpe"].idxmax()]
+                best_dd = agg.loc[agg["mean_dd"].idxmax()]  # closer to 0
+                best_vs_bh = agg.loc[agg["mean_vs_bh"].idxmax()]
+                cs = st.columns(3)
+                cs[0].metric(
+                    "Best risk-adjusted (mean Sharpe)",
+                    str(best_sharpe["strategy"]),
+                    f"{best_sharpe['mean_sharpe']:.2f}",
+                )
+                cs[1].metric(
+                    "Smallest mean drawdown",
+                    str(best_dd["strategy"]),
+                    f"{best_dd['mean_dd']:.2f}%",
+                )
+                cs[2].metric(
+                    "Best mean vs B&H",
+                    str(best_vs_bh["strategy"]),
+                    f"{best_vs_bh['mean_vs_bh']:+.2f}%",
+                )
+                low_trade_strats = agg[
+                    agg["total_trades"] / max(agg.shape[0], 1)
+                    < research.MIN_TRADES_FOR_CONFIDENCE
+                ]
+                if not low_trade_strats.empty:
+                    st.warning(
+                        "Some strategies have very few total trades — "
+                        "their rankings above are not statistically robust.",
+                    )
+            cols = [c for c in ["strategy", "asset", "timeframe",
+                    "total_return_pct", "buy_and_hold_return_pct",
+                    "strategy_vs_bh_pct", "max_drawdown_pct",
+                    "win_rate_pct", "num_trades", "profit_factor",
+                    "fees_paid", "exposure_time_pct", "sharpe_ratio",
+                    "sortino_ratio", "calmar_ratio"]
+                    if c in ok.columns]
+            st.dataframe(
+                _style_vs_bh(ok[cols].copy()),
+                use_container_width=True, hide_index=True, height=340,
+            )
+            st.download_button(
+                "Download strategy_comparison.csv",
+                _df_to_csv_bytes(rl_sc_df),
+                file_name="strategy_comparison.csv",
+                mime="text/csv", key="dl_research_sc",
+            )
+
+    # ---- Robustness ----------------------------------------------------
+    with rl_tabs[3]:
+        if rl_rb_df.empty:
+            st.info("No robustness results yet.")
+        else:
+            ok = rl_rb_df[rl_rb_df["error"].isna()] if "error" in rl_rb_df.columns else rl_rb_df
+            st.markdown(
+                "<div class='section-sub'>Small parameter variations per "
+                "strategy family. The point is fragility testing — "
+                "<b>do not pick the best variant and call it the strategy</b>."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if not ok.empty:
+                fam_summary = ok.groupby("family").agg(
+                    n=("variant", "count"),
+                    median_ret=("total_return_pct", "median"),
+                    worst=("total_return_pct", "min"),
+                    best=("total_return_pct", "max"),
+                    mean_dd=("max_drawdown_pct", "mean"),
+                    beats_bh=("strategy_vs_bh_pct",
+                              lambda s: int((s > 0).sum())),
+                ).reset_index()
+                fam_summary["beats_bh_pct"] = (
+                    fam_summary["beats_bh"] / fam_summary["n"] * 100.0
+                )
+                st.dataframe(
+                    fam_summary, use_container_width=True, hide_index=True,
+                    height=180,
+                )
+                fragile = fam_summary[
+                    (fam_summary["best"] > 0) & (fam_summary["worst"] < -2)
+                ]
+                if not fragile.empty:
+                    st.warning(
+                        f"Fragile families (best variant > 0 but worst "
+                        f"variant < -2%): {list(fragile['family'])}",
+                    )
+            cols = [c for c in ["family", "variant", "asset", "timeframe",
+                    "total_return_pct", "buy_and_hold_return_pct",
+                    "strategy_vs_bh_pct", "max_drawdown_pct",
+                    "num_trades", "sharpe_ratio"]
+                    if c in ok.columns]
+            st.dataframe(
+                _style_vs_bh(ok[cols].copy()),
+                use_container_width=True, hide_index=True, height=340,
+            )
+            st.download_button(
+                "Download robustness_results.csv",
+                _df_to_csv_bytes(rl_rb_df),
+                file_name="robustness_results.csv",
+                mime="text/csv", key="dl_research_rb",
+            )
+
+    # ---- Monte Carlo --------------------------------------------------
+    with rl_tabs[4]:
+        if rl_mc_df.empty:
+            st.info(
+                "No Monte Carlo results yet. Run a backtest (so trades.csv "
+                "exists) then **Run research lab**."
+            )
+        else:
+            ok_row = rl_mc_df.iloc[0].to_dict()
+            n_trades = int(ok_row.get("n_trades", 0))
+            if n_trades < research.MIN_TRADES_FOR_MONTE_CARLO:
+                st.warning("Too few trades for meaningful Monte Carlo analysis.")
+            cmc = st.columns(5)
+            cmc[0].metric("Closed trades", str(n_trades))
+            cmc[1].metric(
+                "Median final value",
+                f"{float(ok_row.get('median_final_value', 0)):,.2f}",
+            )
+            cmc[2].metric(
+                "5th pct final",
+                f"{float(ok_row.get('p05_final_value', 0)):,.2f}",
+            )
+            cmc[3].metric(
+                "95th pct final",
+                f"{float(ok_row.get('p95_final_value', 0)):,.2f}",
+            )
+            cmc[4].metric(
+                "Probability of loss",
+                f"{float(ok_row.get('prob_loss', 0)) * 100:.1f}%",
+            )
+            cmc2 = st.columns(2)
+            cmc2[0].metric(
+                "Worst simulated drawdown",
+                f"{float(ok_row.get('worst_drawdown_pct', 0)):.2f}%",
+            )
+            cmc2[1].metric(
+                "Mean simulated drawdown",
+                f"{float(ok_row.get('mean_drawdown_pct', 0)):.2f}%",
+            )
+            if not rl_mcs_df.empty:
+                import plotly.graph_objects as _go
+                fig = _go.Figure()
+                fig.add_trace(_go.Histogram(
+                    x=rl_mcs_df["return_pct"], nbinsx=40,
+                    marker_color="#38bdf8",
+                    marker_line_color="#0a0e1a", marker_line_width=1,
+                ))
+                fig.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    height=320,
+                    margin=dict(t=30, b=20, l=20, r=20),
+                    xaxis_title="Simulated return (%)",
+                    yaxis_title="Count",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            st.download_button(
+                "Download monte_carlo_results.csv",
+                _df_to_csv_bytes(rl_mc_df),
+                file_name="monte_carlo_results.csv",
+                mime="text/csv", key="dl_research_mc",
+            )
+
+    # ---- Research summary ---------------------------------------------
+    with rl_tabs[5]:
+        rl_summary_df = _research_csv("research_summary.csv")
+        if rl_summary_df.empty:
+            st.info("No research summary yet. Run **Run research lab**.")
+        else:
+            st.markdown(
+                "<div class='section-sub'>Conservative PASS / FAIL / "
+                "INCONCLUSIVE on each lens. <b>FAIL</b> means the evidence is "
+                "actively against; <b>INCONCLUSIVE</b> means insufficient "
+                "data (often too few trades).</div>",
+                unsafe_allow_html=True,
+            )
+            for _, r in rl_summary_df.iterrows():
+                v = str(r["verdict"])
+                cls = ("pill-pos" if v == "PASS"
+                       else "pill-neg" if v == "FAIL"
+                       else "pill-amber")
+                st.markdown(
+                    f"<div style='display:flex;gap:0.6rem;align-items:flex-start;"
+                    f"padding:0.5rem 0;border-bottom:1px dashed "
+                    f"rgba(148,163,184,0.10);'>"
+                    f"<span class='pill {cls}'>"
+                    f"<span class='pill-dot'></span>{v}</span>"
+                    f"<div><b>{r['check']}</b><br>"
+                    f"<span style='color:#9ca3af;font-size:0.88rem;'>"
+                    f"{r['message']}</span></div></div>",
+                    unsafe_allow_html=True,
+                )
+            st.download_button(
+                "Download research_summary.csv",
+                _df_to_csv_bytes(rl_summary_df),
+                file_name="research_summary.csv",
+                mime="text/csv", key="dl_research_summary",
+            )
 
 
 # ---------------------------------------------------------------------------

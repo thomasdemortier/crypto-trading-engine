@@ -7,6 +7,12 @@ Usage:
     python main.py paper
     python main.py clean_logs
     python main.py status
+    python main.py research_timeframes
+    python main.py walk_forward
+    python main.py compare_strategies
+    python main.py robustness
+    python main.py monte_carlo
+    python main.py research_all
 """
 
 from __future__ import annotations
@@ -16,8 +22,11 @@ import shutil
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from src import (
-    backtester, config, data_collector, paper_trader, performance, utils,
+    backtester, config, data_collector, paper_trader, performance,
+    research, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -120,6 +129,147 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Research CLI commands
+# ---------------------------------------------------------------------------
+def _print_summary_block(label: str, df) -> None:
+    if df is None or df.empty:
+        print(f"\n{label}: no rows produced")
+        return
+    if "error" in df.columns:
+        ok = df[df["error"].isna()]
+        bad = df[df["error"].notna()]
+    else:
+        ok, bad = df, df.iloc[0:0]
+    print(f"\n{label}: {len(ok)} ok, {len(bad)} skipped")
+    if not bad.empty:
+        for _, r in bad.head(5).iterrows():
+            ident_cols = [c for c in ("strategy", "family", "variant", "asset",
+                                      "timeframe", "window") if c in r.index]
+            ident = " ".join(f"{c}={r[c]}" for c in ident_cols)
+            print(f"  skip [{ident}]: {r['error']}")
+
+
+def cmd_research_timeframes(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = research.timeframe_comparison(
+        assets=args.assets, timeframes=args.timeframes, save=True,
+    )
+    _print_summary_block("timeframe_comparison", df)
+    if "error" in df.columns:
+        ok = df[df["error"].isna()]
+    else:
+        ok = df
+    if not ok.empty:
+        cols = ["asset", "timeframe", "total_return_pct",
+                "buy_and_hold_return_pct", "strategy_vs_bh_pct",
+                "max_drawdown_pct", "num_trades", "sharpe_ratio"]
+        cols = [c for c in cols if c in ok.columns]
+        print(ok[cols].to_string(index=False))
+    print(f"\nSaved → results/research_timeframe_comparison.csv")
+    return 0
+
+
+def cmd_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = research.walk_forward(
+        assets=args.assets, timeframes=args.timeframes,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, save=True,
+    )
+    _print_summary_block("walk_forward", df)
+    if "error" in df.columns:
+        ok = df[df["error"].isna()]
+        if not ok.empty:
+            wins = ((ok["strategy_return_pct"] > 0)
+                    & (ok["strategy_vs_bh_pct"] > 0)).sum()
+            print(f"  stability score: {wins}/{len(ok)} OOS windows "
+                  f"({wins/len(ok)*100:.1f}%) profitable AND beat B&H")
+    print(f"\nSaved → results/walk_forward_results.csv")
+    return 0
+
+
+def cmd_compare_strategies(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = research.strategy_comparison(
+        assets=args.assets, timeframes=args.timeframes, save=True,
+    )
+    _print_summary_block("strategy_comparison", df)
+    if "error" in df.columns:
+        ok = df[df["error"].isna()]
+    else:
+        ok = df
+    if not ok.empty:
+        cols = ["strategy", "asset", "timeframe", "total_return_pct",
+                "buy_and_hold_return_pct", "strategy_vs_bh_pct",
+                "max_drawdown_pct", "num_trades"]
+        cols = [c for c in cols if c in ok.columns]
+        print(ok[cols].to_string(index=False))
+    print(f"\nSaved → results/strategy_comparison.csv")
+    return 0
+
+
+def cmd_robustness(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = research.robustness(
+        assets=args.assets, timeframes=args.timeframes, save=True,
+    )
+    _print_summary_block("robustness", df)
+    if "error" in df.columns:
+        ok = df[df["error"].isna()]
+    else:
+        ok = df
+    if not ok.empty:
+        for fam in sorted(ok["family"].unique()):
+            sub = ok[ok["family"] == fam]
+            beats = (sub["strategy_vs_bh_pct"] > 0).sum()
+            print(f"  {fam:<14} median_ret={sub['total_return_pct'].median():+.2f}% "
+                  f"worst={sub['total_return_pct'].min():+.2f}% "
+                  f"best={sub['total_return_pct'].max():+.2f}% "
+                  f"beats_BH={beats}/{len(sub)}")
+    print(f"\nSaved → results/robustness_results.csv")
+    return 0
+
+
+def cmd_monte_carlo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    trades_path = config.LOGS_DIR / "trades.csv"
+    if not trades_path.exists() or trades_path.stat().st_size == 0:
+        print("No saved trades.csv yet — run a backtest first.")
+        return 1
+    tdf = pd.read_csv(trades_path)
+    summary = research.monte_carlo_from_trades(
+        tdf, starting_capital=config.RISK.starting_capital,
+        n_sim=args.n_sim, save=True,
+    )
+    if not summary.get("ok"):
+        print(f"Monte Carlo not run: {summary.get('reason')}")
+        return 0
+    print(f"Monte Carlo on {summary['n_trades']} closed trades, "
+          f"{summary['n_simulations']} simulations:")
+    print(f"  starting capital     : {summary['starting_capital']:,.2f}")
+    print(f"  actual final value   : {summary['actual_final_value']:,.2f}")
+    print(f"  median final value   : {summary['median_final_value']:,.2f}")
+    print(f"  5th  pct final value : {summary['p05_final_value']:,.2f}")
+    print(f"  95th pct final value : {summary['p95_final_value']:,.2f}")
+    print(f"  prob. of loss        : {summary['prob_loss'] * 100:.1f}%")
+    print(f"  worst sim drawdown   : {summary['worst_drawdown_pct']:.2f}%")
+    print(f"\nSaved → results/monte_carlo_results.csv "
+          f"and results/monte_carlo_simulations.csv")
+    return 0
+
+
+def cmd_research_all(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    bundle = research.run_all(
+        assets=args.assets, timeframes=args.timeframes, n_sim=args.n_sim,
+    )
+    print("\n=== research summary ===")
+    for check, v in bundle["summary"]["checks"].items():
+        print(f"  [{v['verdict']:<12}] {check}: {v['message']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="crypto_trading_engine",
                                 description="Research-only BTC/ETH backtester.")
@@ -151,6 +301,49 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("status", help="Print configuration and cache status.")
     sp.set_defaults(func=cmd_status)
+
+    # ----- Research commands ------------------------------------------------
+    research_assets_default = ["BTC/USDT", "ETH/USDT"]
+    research_tfs_default = ["1h", "4h", "1d"]
+
+    sp = sub.add_parser("research_timeframes",
+                        help="Run incumbent strategy across assets × timeframes.")
+    sp.add_argument("--assets", nargs="+", default=research_assets_default)
+    sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
+    sp.set_defaults(func=cmd_research_timeframes)
+
+    sp = sub.add_parser("walk_forward",
+                        help="Walk-forward analysis over rolling OOS windows.")
+    sp.add_argument("--assets", nargs="+", default=research_assets_default)
+    sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
+    sp.add_argument("--in-sample-days", type=int, default=90, dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=30, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=30, dest="step_days")
+    sp.set_defaults(func=cmd_walk_forward)
+
+    sp = sub.add_parser("compare_strategies",
+                        help="Run multiple strategies through the same risk engine.")
+    sp.add_argument("--assets", nargs="+", default=research_assets_default)
+    sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
+    sp.set_defaults(func=cmd_compare_strategies)
+
+    sp = sub.add_parser("robustness",
+                        help="Sweep small parameter variations per strategy family.")
+    sp.add_argument("--assets", nargs="+", default=research_assets_default)
+    sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
+    sp.set_defaults(func=cmd_robustness)
+
+    sp = sub.add_parser("monte_carlo",
+                        help="Trade-order Monte Carlo on saved trades.csv.")
+    sp.add_argument("--n-sim", type=int, default=1000, dest="n_sim")
+    sp.set_defaults(func=cmd_monte_carlo)
+
+    sp = sub.add_parser("research_all",
+                        help="Run every research lens and save results + summary.")
+    sp.add_argument("--assets", nargs="+", default=research_assets_default)
+    sp.add_argument("--timeframes", nargs="+", default=research_tfs_default)
+    sp.add_argument("--n-sim", type=int, default=1000, dest="n_sim")
+    sp.set_defaults(func=cmd_research_all)
 
     return p
 

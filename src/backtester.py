@@ -28,8 +28,10 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from . import config, data_collector, indicators, strategy, utils
+from . import config, data_collector, indicators, utils
 from .risk_engine import RiskEngine
+from .strategies.base import Strategy as _StrategyBase
+from .strategies import default_strategy as _default_strategy
 
 logger = utils.get_logger("cte.backtest")
 
@@ -49,11 +51,37 @@ class BacktestArtifacts:
 # Loading & alignment
 # ---------------------------------------------------------------------------
 def _load_with_indicators(asset: str, timeframe: str,
-                          strat_cfg: config.StrategyConfig) -> pd.DataFrame:
+                          strat_cfg: config.StrategyConfig,
+                          strategy_obj: Optional[_StrategyBase] = None) -> pd.DataFrame:
+    """Load candles and apply the strategy's required indicators.
+
+    `strategy_obj` is optional only for back-compat — if omitted, the legacy
+    full RSI/MA/ATR indicator set is applied via `indicators.add_indicators`.
+    """
     df = data_collector.load_candles(asset, timeframe)
-    df = indicators.add_indicators(df, strat_cfg)
+    if strategy_obj is None:
+        df = indicators.add_indicators(df, strat_cfg)
+    else:
+        df = strategy_obj.prepare(df, strat_cfg)
     df = df.reset_index(drop=True)
     return df
+
+
+def _slice_to_window(df: pd.DataFrame, start_ts_ms: Optional[int],
+                     end_ts_ms: Optional[int]) -> pd.DataFrame:
+    """Keep rows whose `timestamp` falls in the inclusive [start, end] window.
+
+    Indicators are computed on the FULL series before slicing, so the first
+    rows of the slice still have correct (non-NaN-only) values.
+    """
+    if start_ts_ms is None and end_ts_ms is None:
+        return df
+    sub = df
+    if start_ts_ms is not None:
+        sub = sub[sub["timestamp"] >= int(start_ts_ms)]
+    if end_ts_ms is not None:
+        sub = sub[sub["timestamp"] <= int(end_ts_ms)]
+    return sub.reset_index(drop=True)
 
 
 def _align_frames(frames: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
@@ -86,24 +114,46 @@ def run_backtest(
     strat_cfg: Optional[config.StrategyConfig] = None,
     backtest_cfg: Optional[config.BacktestConfig] = None,
     save: bool = True,
+    strategy: Optional[_StrategyBase] = None,
+    start_ts_ms: Optional[int] = None,
+    end_ts_ms: Optional[int] = None,
 ) -> BacktestArtifacts:
+    """Run the backtester.
+
+    `strategy` defaults to the incumbent RSI/MA/ATR strategy so all
+    existing call sites are unchanged. Pass any subclass of
+    `src.strategies.base.Strategy` to swap.
+
+    `start_ts_ms` / `end_ts_ms` (inclusive ms epoch UTC) restrict the
+    simulation to a window. Indicators are computed on the FULL loaded
+    series and only then sliced — this is the honest way to support
+    walk-forward windows without losing warmup.
+    """
     utils.assert_paper_only()
     assets = assets or config.ASSETS
     risk_cfg = risk_cfg or config.RISK
     strat_cfg = strat_cfg or config.STRATEGY
     backtest_cfg = backtest_cfg or config.BACKTEST
+    strategy_obj: _StrategyBase = strategy or _default_strategy()
 
     # --- Load data + indicators -------------------------------------------
-    frames = {a: _load_with_indicators(a, timeframe, strat_cfg) for a in assets}
+    frames = {
+        a: _load_with_indicators(a, timeframe, strat_cfg, strategy_obj)
+        for a in assets
+    }
+    if start_ts_ms is not None or end_ts_ms is not None:
+        frames = {a: _slice_to_window(df, start_ts_ms, end_ts_ms)
+                  for a, df in frames.items()}
     frames = _align_frames(frames)
     n_bars = len(next(iter(frames.values())))
-    logger.info("backtest aligned: %d bars across %d assets (%s)",
-                n_bars, len(assets), timeframe)
+    logger.info("backtest aligned: %d bars across %d assets (%s, strategy=%s)",
+                n_bars, len(assets), timeframe, strategy_obj.name)
 
-    if n_bars < strat_cfg.min_history_candles + 2:
+    min_hist = strategy_obj.min_history(strat_cfg)
+    if n_bars < min_hist + 2:
         raise RuntimeError(
             f"not enough candles ({n_bars}) for backtest. need at least "
-            f"{strat_cfg.min_history_candles + 2}."
+            f"{min_hist + 2}."
         )
 
     engine = RiskEngine(risk_cfg)
@@ -123,7 +173,7 @@ def run_backtest(
     #
     # The final iteration (i = n_bars - 1) does steps 1 and 2 but NOT step 3,
     # since there is no bar i+1 to fill against.
-    for i in range(strat_cfg.min_history_candles, n_bars):
+    for i in range(min_hist, n_bars):
         marks_close: Dict[str, float] = {
             a: float(frames[a].iloc[i]["close"]) for a in assets
         }
@@ -158,7 +208,7 @@ def run_backtest(
         for asset in assets:
             row = frames[asset].iloc[i]
             in_position = asset in engine.positions
-            sig = strategy.signal_for_row(asset, row, in_position, strat_cfg)
+            sig = strategy_obj.signal_for_row(asset, row, in_position, strat_cfg)
             fill_price = (
                 float(row["close"]) if backtest_cfg.fill_on_signal_close
                 else bar_opens_next[asset]
@@ -193,6 +243,7 @@ def run_backtest(
         "last_candle_ms": last_ts,
         "run_timestamp_iso": datetime.now(timezone.utc).isoformat(),
         "fill_on_signal_close": bool(backtest_cfg.fill_on_signal_close),
+        "strategy_name": strategy_obj.name,
     }
 
     artifacts = BacktestArtifacts(
