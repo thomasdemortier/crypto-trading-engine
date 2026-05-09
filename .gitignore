@@ -25,7 +25,7 @@ data/raw/*.csv
 data/processed/*.csv
 logs/*.csv
 results/*.csv
-results/paper_state.json
+results/*.json
 
 # But keep folder structure
 !data/raw/.gitkeep

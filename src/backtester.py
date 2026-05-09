@@ -20,7 +20,9 @@ Multi-asset handling
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -40,6 +42,7 @@ class BacktestArtifacts:
     final_equity: float
     starting_equity: float
     asset_close_curves: Dict[str, pd.DataFrame]  # asset → df(timestamp, close)
+    meta: Dict[str, object] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +174,27 @@ def run_backtest(
         a: frames[a][["timestamp", "datetime", "close"]].copy() for a in assets
     }
 
+    first_ts = int(equity_df["timestamp"].iloc[0]) if not equity_df.empty else None
+    last_ts = int(equity_df["timestamp"].iloc[-1]) if not equity_df.empty else None
+    meta = {
+        "assets": list(assets),
+        "timeframe": timeframe,
+        "starting_capital": float(risk_cfg.starting_capital),
+        "num_candles_used": int(len(equity_df)),
+        "first_candle_iso": (
+            pd.to_datetime(first_ts, unit="ms", utc=True).isoformat()
+            if first_ts is not None else None
+        ),
+        "last_candle_iso": (
+            pd.to_datetime(last_ts, unit="ms", utc=True).isoformat()
+            if last_ts is not None else None
+        ),
+        "first_candle_ms": first_ts,
+        "last_candle_ms": last_ts,
+        "run_timestamp_iso": datetime.now(timezone.utc).isoformat(),
+        "fill_on_signal_close": bool(backtest_cfg.fill_on_signal_close),
+    }
+
     artifacts = BacktestArtifacts(
         equity_curve=equity_df,
         trades=trades_df,
@@ -178,6 +202,7 @@ def run_backtest(
         final_equity=final_eq,
         starting_equity=float(risk_cfg.starting_capital),
         asset_close_curves=asset_curves,
+        meta=meta,
     )
 
     if save:
@@ -200,3 +225,6 @@ def _save_artifacts(art: BacktestArtifacts) -> None:
     # asset price curves are useful for the dashboard chart
     for asset, df in art.asset_close_curves.items():
         utils.write_df(df, config.RESULTS_DIR / f"price_{utils.safe_symbol(asset)}.csv")
+    if art.meta:
+        meta_path = config.RESULTS_DIR / "backtest_meta.json"
+        meta_path.write_text(json.dumps(art.meta, indent=2, default=str))

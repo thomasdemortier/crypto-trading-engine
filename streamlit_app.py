@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -90,6 +91,20 @@ def _read_artifact(name: str, subdir: str = "results") -> Optional[pd.DataFrame]
         return pd.read_csv(p)
     except Exception:
         return None
+
+
+def _read_meta() -> Optional[Dict]:
+    p = config.RESULTS_DIR / "backtest_meta.json"
+    if not p.exists() or p.stat().st_size == 0:
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
+
+
+def _df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +225,14 @@ if do_backtest:
                     starting_capital=risk_cfg.starting_capital,
                 )
                 performance.save_metrics(metrics)
+                pa_df = performance.per_asset_metrics(
+                    art.trades, art.asset_close_curves,
+                    starting_capital=risk_cfg.starting_capital,
+                    equity_curve=art.equity_curve,
+                )
+                performance.save_per_asset_metrics(pa_df)
+                # Mark the just-written run as fresh in this session.
+                st.session_state["fresh_run_iso"] = art.meta.get("run_timestamp_iso")
                 st.success(
                     f"Backtest complete — final equity: "
                     f"{metrics.final_portfolio_value:,.2f} USDT"
@@ -240,32 +263,235 @@ equity_df = _df_or_empty(_read_artifact("equity_curve.csv"))
 trades_df = _df_or_empty(_read_artifact("trades.csv", subdir="logs"))
 decisions_df = _df_or_empty(_read_artifact("decisions.csv", subdir="logs"))
 metrics_df = _df_or_empty(_read_artifact("summary_metrics.csv"))
+per_asset_df = _df_or_empty(_read_artifact("per_asset_metrics.csv"))
+meta = _read_meta()
 
 
 # ---------------------------------------------------------------------------
-# Section 3 — Key metric cards
+# Section 1 — Backtest Scope panel
 # ---------------------------------------------------------------------------
-st.subheader("Key metrics")
+st.subheader("Backtest scope")
 
-if metrics_df.empty:
-    st.info("No backtest run yet. Configure the sidebar and click **Run backtest**.")
+if meta is None:
+    st.info(
+        "No backtest has been run on this machine yet. Configure the sidebar "
+        "and click **Run backtest** to populate this dashboard."
+    )
+    meta_assets: List[str] = []
+    meta_timeframe = timeframe
 else:
-    m = metrics_df.iloc[0].to_dict()
+    meta_assets = list(meta.get("assets") or [])
+    meta_timeframe = str(meta.get("timeframe") or timeframe)
+
+    fresh_iso = st.session_state.get("fresh_run_iso")
+    run_iso = meta.get("run_timestamp_iso")
+    is_fresh = bool(fresh_iso) and fresh_iso == run_iso
+    freshness_label = (
+        "Fresh — generated in this session"
+        if is_fresh else "Loaded from saved files"
+    )
+    freshness_color = "#2e7d32" if is_fresh else "#795548"
+
+    scope_rows = [
+        ("Selected assets", ", ".join(meta_assets) if meta_assets else "—"),
+        ("Timeframe", meta_timeframe),
+        ("Starting capital", f"{float(meta.get('starting_capital', 0.0)):,.2f} USDT"),
+        ("First candle (UTC)", str(meta.get("first_candle_iso") or "—")),
+        ("Last candle (UTC)", str(meta.get("last_candle_iso") or "—")),
+        ("Candles used (post-alignment)", str(int(meta.get("num_candles_used") or 0))),
+        ("Last backtest run (UTC)", str(run_iso or "—")),
+        ("Result source", freshness_label),
+    ]
+    scope_df = pd.DataFrame(scope_rows, columns=["Field", "Value"])
+    st.dataframe(scope_df, use_container_width=True, hide_index=True)
+
+    # Show a clear banner if the sidebar selection differs from the loaded run.
+    sidebar_set = set(asset_choice or [])
+    meta_set = set(meta_assets)
+    if sidebar_set and sidebar_set != meta_set:
+        st.warning(
+            f"Sidebar selection ({sorted(sidebar_set)}) differs from the saved "
+            f"backtest scope ({sorted(meta_set)}). Click **Run backtest** to "
+            f"regenerate results for the current selection. Numbers below "
+            f"reflect the saved scope."
+        )
+    if timeframe != meta_timeframe:
+        st.warning(
+            f"Sidebar timeframe ({timeframe}) differs from the saved backtest "
+            f"timeframe ({meta_timeframe}). Numbers below reflect the saved "
+            f"timeframe."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 2 — Results
+# ---------------------------------------------------------------------------
+def _render_metric_block(label_prefix: str, m: dict) -> None:
     cols = st.columns(4)
-    cols[0].metric("Final portfolio", f"{m['final_portfolio_value']:,.0f} USDT",
-                   f"{m['total_return_pct']:+.2f}%")
-    cols[1].metric("Buy & hold return", f"{m['buy_and_hold_return_pct']:+.2f}%",
-                   f"{m['strategy_vs_bh_pct']:+.2f}% vs B&H")
-    cols[2].metric("Max drawdown", f"{m['max_drawdown_pct']:+.2f}%")
-    cols[3].metric("Win rate", f"{m['win_rate_pct']:.1f}%",
+    cols[0].metric(
+        f"{label_prefix} — Final portfolio",
+        f"{m['final_portfolio_value']:,.0f} USDT",
+        f"{m['total_return_pct']:+.2f}%",
+    )
+    cols[1].metric(
+        f"{label_prefix} — Buy & hold",
+        f"{m['buy_and_hold_return_pct']:+.2f}%",
+        f"{m['strategy_vs_bh_pct']:+.2f}% vs B&H",
+    )
+    cols[2].metric(f"{label_prefix} — Max drawdown",
+                   f"{m['max_drawdown_pct']:+.2f}%")
+    cols[3].metric(f"{label_prefix} — Win rate",
+                   f"{m['win_rate_pct']:.1f}%",
                    f"{int(m['num_trades'])} round-trips")
 
     cols2 = st.columns(4)
-    cols2[0].metric("Profit factor", f"{m['profit_factor']:.2f}")
-    cols2[1].metric("Fees paid", f"{m['fees_paid']:,.2f} USDT")
-    cols2[2].metric("Sharpe", f"{m['sharpe_ratio']:.2f}")
-    cols2[3].metric("Sortino / Calmar",
+    cols2[0].metric(f"{label_prefix} — Profit factor", f"{m['profit_factor']:.2f}")
+    cols2[1].metric(f"{label_prefix} — Fees paid",
+                    f"{m['fees_paid']:,.2f} USDT")
+    cols2[2].metric(f"{label_prefix} — Sharpe", f"{m['sharpe_ratio']:.2f}")
+    cols2[3].metric(f"{label_prefix} — Sortino / Calmar",
                     f"{m['sortino_ratio']:.2f} / {m['calmar_ratio']:.2f}")
+
+
+def _render_per_asset_block(label_prefix: str, row: pd.Series) -> None:
+    cols = st.columns(4)
+    cols[0].metric(
+        f"{label_prefix} — Realized P&L",
+        f"{row['realized_pnl']:+,.2f} USDT",
+        f"{row['realized_return_on_allocation_pct']:+.2f}% on allocated share",
+    )
+    cols[1].metric(
+        f"{label_prefix} — Buy & hold",
+        f"{row['buy_and_hold_return_pct']:+.2f}%",
+        f"{row['strategy_vs_bh_pct']:+.2f}% vs B&H",
+    )
+    cols[2].metric(
+        f"{label_prefix} — Win rate",
+        f"{row['win_rate_pct']:.1f}%",
+        f"{int(row['num_trades'])} round-trips",
+    )
+    cols[3].metric(
+        f"{label_prefix} — Profit factor",
+        f"{row['profit_factor']:.2f}",
+    )
+
+    cols2 = st.columns(4)
+    cols2[0].metric(f"{label_prefix} — Avg win",
+                    f"{row['avg_winning_trade']:+,.2f} USDT")
+    cols2[1].metric(f"{label_prefix} — Avg loss",
+                    f"{row['avg_losing_trade']:+,.2f} USDT")
+    cols2[2].metric(f"{label_prefix} — Fees paid",
+                    f"{row['fees_paid']:,.2f} USDT")
+    cols2[3].metric(f"{label_prefix} — Allocated capital",
+                    f"{row['allocated_capital']:,.2f} USDT")
+
+
+if metrics_df.empty:
+    st.subheader("Results")
+    st.info("No backtest run yet. Configure the sidebar and click **Run backtest**.")
+else:
+    m = metrics_df.iloc[0].to_dict()
+    n_assets = len(meta_assets)
+
+    # ----- B&H underperformance warning (always shown when applicable) -----
+    if float(m.get("strategy_vs_bh_pct", 0.0)) < 0:
+        st.warning(
+            "Strategy underperformed buy and hold over this exact tested window."
+        )
+
+    # ----- Per-asset sections -----
+    if n_assets <= 1:
+        only = meta_assets[0] if meta_assets else "(asset)"
+        st.subheader(f"{only} Results")
+        st.caption(
+            "Single asset selected — combined portfolio metrics below ARE the "
+            f"{only} results (one shared cash pool, one asset)."
+        )
+        _render_metric_block(only, m)
+    else:
+        # Both assets selected: separate per-asset sections + a combined section
+        # explicitly labelled, plus a side-by-side comparison table.
+        if per_asset_df.empty:
+            st.warning(
+                "Per-asset breakdown is missing from the saved results. "
+                "Click **Run backtest** to regenerate."
+            )
+        else:
+            for asset in meta_assets:
+                rows = per_asset_df[per_asset_df["asset"] == asset]
+                if rows.empty:
+                    st.subheader(f"{asset} Results")
+                    st.info(f"No saved per-asset data for {asset}.")
+                    continue
+                st.subheader(f"{asset} Results")
+                st.caption(
+                    f"Trade-derived metrics for {asset} alone. Allocated capital "
+                    f"is starting_capital ÷ number of selected assets."
+                )
+                _render_per_asset_block(asset, rows.iloc[0])
+
+        st.subheader("Combined Portfolio Results")
+        st.caption(
+            "Shared cash pool across all selected assets. Sharpe, Sortino, "
+            "max drawdown and exposure-time are PORTFOLIO-LEVEL only — they "
+            "cannot be cleanly split per asset and so are not shown above."
+        )
+        _render_metric_block("Portfolio", m)
+
+        if not per_asset_df.empty:
+            st.subheader("Asset comparison")
+            comp_cols = [
+                "asset", "allocated_capital", "realized_pnl",
+                "realized_return_on_allocation_pct", "buy_and_hold_return_pct",
+                "strategy_vs_bh_pct", "num_trades", "win_rate_pct",
+                "profit_factor", "fees_paid", "slippage_cost",
+            ]
+            comp_cols = [c for c in comp_cols if c in per_asset_df.columns]
+            st.dataframe(
+                per_asset_df[comp_cols], use_container_width=True, hide_index=True,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Section 3 — CSV downloads
+# ---------------------------------------------------------------------------
+st.subheader("Downloads")
+dl_cols = st.columns(5)
+if not metrics_df.empty:
+    dl_cols[0].download_button(
+        "Metrics CSV", _df_to_csv_bytes(metrics_df),
+        "summary_metrics.csv", "text/csv",
+    )
+else:
+    dl_cols[0].caption("Metrics CSV — run a backtest to enable.")
+if not trades_df.empty:
+    dl_cols[1].download_button(
+        "Trades CSV", _df_to_csv_bytes(trades_df),
+        "trades.csv", "text/csv",
+    )
+else:
+    dl_cols[1].caption("Trades CSV — no trades to export.")
+if not decisions_df.empty:
+    dl_cols[2].download_button(
+        "Decisions CSV", _df_to_csv_bytes(decisions_df),
+        "decisions.csv", "text/csv",
+    )
+else:
+    dl_cols[2].caption("Decisions CSV — no decisions to export.")
+if not equity_df.empty:
+    dl_cols[3].download_button(
+        "Equity curve CSV", _df_to_csv_bytes(equity_df),
+        "equity_curve.csv", "text/csv",
+    )
+else:
+    dl_cols[3].caption("Equity curve CSV — run a backtest to enable.")
+if not per_asset_df.empty:
+    dl_cols[4].download_button(
+        "Asset comparison CSV", _df_to_csv_bytes(per_asset_df),
+        "per_asset_metrics.csv", "text/csv",
+    )
+else:
+    dl_cols[4].caption("Asset comparison CSV — run a multi-asset backtest.")
 
 
 # ---------------------------------------------------------------------------
@@ -276,13 +502,30 @@ chart_tabs = st.tabs(["Equity", "Drawdown", "Price + trades",
                       "Cumulative P&L", "Monthly returns"])
 
 with chart_tabs[0]:
-    st.plotly_chart(plotting.equity_curve_fig(equity_df, float(starting_capital)),
-                    use_container_width=True)
+    if equity_df.empty:
+        st.info(
+            "No equity curve to plot. Reason: no backtest has been run yet — "
+            "click **Run backtest** in the sidebar."
+        )
+    else:
+        st.plotly_chart(
+            plotting.equity_curve_fig(equity_df, float(starting_capital)),
+            use_container_width=True,
+        )
 with chart_tabs[1]:
-    st.plotly_chart(plotting.drawdown_fig(equity_df), use_container_width=True)
+    if equity_df.empty:
+        st.info(
+            "No drawdown to plot. Reason: equity curve is empty — run a "
+            "backtest first."
+        )
+    else:
+        st.plotly_chart(plotting.drawdown_fig(equity_df), use_container_width=True)
 with chart_tabs[2]:
     if not asset_choice:
-        st.info("Pick at least one asset.")
+        st.info(
+            "No price chart to plot. Reason: no asset is selected in the "
+            "sidebar. Pick BTC/USDT and/or ETH/USDT."
+        )
     else:
         which = st.selectbox("Asset for price chart", options=asset_choice,
                              key="price_asset")
@@ -290,14 +533,57 @@ with chart_tabs[2]:
         if price_df is None:
             price_df = _safe_load_candles(which, timeframe)
         if price_df is None:
-            st.info(f"No price data for {which}. Click **Refresh data**.")
+            st.info(
+                f"No price data found for {which} at {timeframe}. Reason: "
+                f"the candle CSV does not exist locally — click **Refresh "
+                f"data** in the sidebar to download it."
+            )
         else:
-            st.plotly_chart(plotting.price_with_trades_fig(price_df, trades_df, which),
-                            use_container_width=True)
+            if trades_df.empty:
+                st.caption(
+                    f"Showing {which} closes only — no trade markers because "
+                    "no trades were generated under current settings."
+                )
+            elif trades_df[trades_df["asset"] == which].empty:
+                st.caption(
+                    f"Showing {which} closes only — no trades recorded for "
+                    f"{which} in the last backtest."
+                )
+            st.plotly_chart(
+                plotting.price_with_trades_fig(price_df, trades_df, which),
+                use_container_width=True,
+            )
 with chart_tabs[3]:
-    st.plotly_chart(plotting.cumulative_pnl_fig(trades_df), use_container_width=True)
+    if trades_df.empty:
+        st.info(
+            "No cumulative P&L to plot. Reason: no trades were generated "
+            "under current settings — try lowering the RSI buy threshold or "
+            "raising the ATR% max in the sidebar."
+        )
+    elif trades_df[trades_df["side"] == "SELL"].empty:
+        st.info(
+            "No cumulative P&L to plot. Reason: only OPEN trades exist — no "
+            "round-trips have been closed yet."
+        )
+    else:
+        st.plotly_chart(
+            plotting.cumulative_pnl_fig(trades_df), use_container_width=True,
+        )
 with chart_tabs[4]:
-    st.plotly_chart(plotting.monthly_returns_fig(equity_df), use_container_width=True)
+    if equity_df.empty:
+        st.info(
+            "No monthly returns to plot. Reason: equity curve is empty — "
+            "run a backtest first."
+        )
+    elif len(equity_df) < 30:
+        st.info(
+            f"Not enough history to compute monthly returns — only "
+            f"{len(equity_df)} bars available. Use a longer history window."
+        )
+    else:
+        st.plotly_chart(
+            plotting.monthly_returns_fig(equity_df), use_container_width=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -305,15 +591,19 @@ with chart_tabs[4]:
 # ---------------------------------------------------------------------------
 st.subheader("Trade history")
 if trades_df.empty:
-    st.info("No trades to show yet.")
+    st.info("No trades generated under current settings.")
 else:
     display_cols = ["datetime_iso", "asset", "side", "price", "size",
                     "fee", "slippage_cost", "realized_pnl",
                     "portfolio_value", "reason"]
     display_cols = [c for c in display_cols if c in trades_df.columns]
+    st.caption(
+        f"{len(trades_df)} trade row(s) across "
+        f"{trades_df['asset'].nunique()} asset(s)."
+    )
     st.dataframe(trades_df[display_cols], use_container_width=True, height=320)
-    st.download_button("Download trades.csv", trades_df.to_csv(index=False),
-                       "trades.csv", "text/csv")
+    st.download_button("Download trades.csv", _df_to_csv_bytes(trades_df),
+                       "trades.csv", "text/csv", key="dl_trades_section")
 
 
 # ---------------------------------------------------------------------------
@@ -321,11 +611,14 @@ else:
 # ---------------------------------------------------------------------------
 st.subheader("Decision log")
 if decisions_df.empty:
-    st.info("No decisions logged yet.")
+    st.info("No decisions logged under current settings.")
 else:
+    st.caption(
+        f"{len(decisions_df)} decision row(s) — showing the most recent 500."
+    )
     st.dataframe(decisions_df.tail(500), use_container_width=True, height=320)
-    st.download_button("Download decisions.csv", decisions_df.to_csv(index=False),
-                       "decisions.csv", "text/csv")
+    st.download_button("Download decisions.csv", _df_to_csv_bytes(decisions_df),
+                       "decisions.csv", "text/csv", key="dl_decisions_section")
 
 
 # ---------------------------------------------------------------------------

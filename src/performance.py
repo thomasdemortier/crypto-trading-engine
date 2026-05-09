@@ -249,3 +249,88 @@ def drawdown_curve(equity: pd.Series) -> pd.Series:
     if equity.empty:
         return equity
     return (equity / equity.cummax()) - 1.0
+
+
+# ---------------------------------------------------------------------------
+# Per-asset breakdown
+# ---------------------------------------------------------------------------
+def per_asset_metrics(
+    trades: pd.DataFrame,
+    price_curves: Dict[str, pd.DataFrame],
+    starting_capital: float,
+    equity_curve: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Per-asset breakdown derived from the closed-trade log.
+
+    Portfolio-level metrics (Sharpe, Sortino, drawdown, exposure-time) are
+    NOT split per asset because the backtester runs a single shared cash
+    pool — those numbers only make sense at the portfolio level.
+
+    The B&H benchmark for each asset is computed on its allocated share
+    (`starting_capital / num_assets`) over the same window the strategy
+    actually traded over.
+    """
+    assets = list(price_curves.keys())
+    n = max(len(assets), 1)
+    allocated = starting_capital / n
+
+    # Window bounds — same as the combined-portfolio computation.
+    start_ts = end_ts = None
+    if equity_curve is not None and not equity_curve.empty and "timestamp" in equity_curve:
+        start_ts = int(equity_curve["timestamp"].iloc[0])
+        end_ts = int(equity_curve["timestamp"].iloc[-1])
+
+    rows: List[dict] = []
+    for asset in assets:
+        sub = trades[trades["asset"] == asset] if not trades.empty else trades
+        sells = sub[sub["side"] == "SELL"] if not sub.empty else sub
+        buys = sub[sub["side"] == "BUY"] if not sub.empty else sub
+
+        pnls = sells["realized_pnl"].astype(float) if not sells.empty else pd.Series(dtype=float)
+        wins = pnls[pnls > 0]
+        losses = pnls[pnls < 0]
+        win_rate = (len(wins) / len(pnls) * 100.0) if len(pnls) > 0 else 0.0
+        pf = _safe_div(wins.sum(), -losses.sum()) if len(pnls) > 0 else 0.0
+        fees = float(sub["fee"].sum()) if not sub.empty else 0.0
+        slip = float(sub["slippage_cost"].sum()) if not sub.empty else 0.0
+
+        realized_pnl = float(pnls.sum()) if len(pnls) > 0 else 0.0
+        realized_return_on_alloc_pct = (
+            (realized_pnl / allocated * 100.0) if allocated > 0 else 0.0
+        )
+
+        bh_pct = _buy_and_hold_return(
+            {asset: price_curves[asset]}, allocated,
+            start_ts_ms=start_ts, end_ts_ms=end_ts,
+        ) * 100.0
+
+        durations = _trade_durations_hours(sub) if not sub.empty else []
+        avg_dur = float(np.mean(durations)) if durations else 0.0
+
+        rows.append({
+            "asset": asset,
+            "allocated_capital": allocated,
+            "realized_pnl": realized_pnl,
+            "realized_return_on_allocation_pct": realized_return_on_alloc_pct,
+            "buy_and_hold_return_pct": bh_pct,
+            "strategy_vs_bh_pct": realized_return_on_alloc_pct - bh_pct,
+            "num_trades": len(pnls),
+            "num_buys": len(buys),
+            "num_sells": len(sells),
+            "win_rate_pct": win_rate,
+            "profit_factor": pf,
+            "avg_winning_trade": float(wins.mean()) if len(wins) else 0.0,
+            "avg_losing_trade": float(losses.mean()) if len(losses) else 0.0,
+            "largest_win": float(pnls.max()) if len(pnls) else 0.0,
+            "largest_loss": float(pnls.min()) if len(pnls) else 0.0,
+            "fees_paid": fees,
+            "slippage_cost": slip,
+            "avg_trade_duration_hours": avg_dur,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def save_per_asset_metrics(df: pd.DataFrame, path=None) -> None:
+    path = path or (config.RESULTS_DIR / "per_asset_metrics.csv")
+    utils.write_df(df, path)
