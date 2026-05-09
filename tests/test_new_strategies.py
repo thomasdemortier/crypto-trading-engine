@@ -21,7 +21,7 @@ def _csv(symbol: str, timeframe: str, close: np.ndarray, volume: np.ndarray) -> 
     low = np.minimum(open_, close) - np.abs(rng.normal(0, 0.3, n))
     ts = pd.date_range("2023-01-01", periods=n, freq="4h", tz="UTC")
     df = pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts, "open": open_, "high": high, "low": low,
         "close": close, "volume": volume,
     })

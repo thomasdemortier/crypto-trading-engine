@@ -21,7 +21,7 @@ def _synthetic_ohlcv(n: int = 400, seed: int = 0) -> pd.DataFrame:
     vol = rng.uniform(100, 500, size=n)
     ts = pd.date_range("2023-01-01", periods=n, freq="4h", tz="UTC")
     return pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts,
         "open": open_, "high": high, "low": low,
         "close": close, "volume": vol,

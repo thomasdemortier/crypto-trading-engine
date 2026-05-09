@@ -23,6 +23,7 @@ env/
 # Cached data and runtime artifacts
 data/raw/*.csv
 data/processed/*.csv
+data/sentiment/*.csv
 logs/*.csv
 results/*.csv
 results/*.json
@@ -45,3 +46,7 @@ hf_cache/
 .cache/
 results/kronos_*.csv
 results/kronos_*.json
+
+# Generated research data caches
+data/futures/
+data/market_structure/

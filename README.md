@@ -17,7 +17,20 @@ A research-only backtesting and paper-trading engine for **BTC/USDT** and **ETH/
 - **BTC buy-and-hold remains the strongest practical baseline.**
 - Future work should use **new signal classes** (funding, on-chain flows, sentiment, real BTC dominance), not further tweaking of price-based TA on the same universe.
 
-For the full evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+For the full v1 evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+
+### Branch experiment: sentiment / Fear & Greed overlay
+
+`research/strategy-3-sentiment-fear-greed` tests an overlay on the
+prior-best market-structure vol-target allocator using ~8 years of
+alternative.me Fear & Greed daily data. Overlay rules: +20 pp BTC on
+extreme fear (when BTC > 200d MA), −20 pp from alts on extreme greed,
+−20 pp risky on deteriorating sentiment. **Verdict: FAIL** (6 of 10
+scorecard checks). The overlay **underperformed the unmodified
+vol-target in 8 of 14 OOS windows** AND **lost to its own random-overlay
+placebo by 30 pp** on full-window return — the strongest
+hypothesis-rejecting outcome on this project so far. Full report:
+[`reports/sentiment_research_report.md`](reports/sentiment_research_report.md).
 
 **Latest measured results** (1459 days of BTC + ETH 1h / 4h / 1d, plus 8 alts at 1d):
 
