@@ -1,0 +1,77 @@
+name: safety-ci
+
+# Triggers:
+#   * pull_request — every PR (against any branch).
+#   * push to main — block bad merges that bypassed the PR gate.
+#   * push to research/* — keep research branches honest.
+#
+# Goal: prevent any change that weakens the bot safety system from
+# reaching `main`. The job runs four read-only checks. Any check that
+# reports the safety lock unlocked, a tracked generated artifact, a
+# hardcoded broker key, an order-placement function, or an env-var
+# unlock fails the build.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'research/**'
+
+jobs:
+  safety:
+    name: safety + system health + repo invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 1. Full test suite. Includes the safety-lock invariants
+      #    (test_safety_lock_no_env_var_can_unlock,
+      #     test_no_strategy_is_paper_or_live_allowed, etc.).
+      - name: Run pytest
+        run: pytest -q
+
+      # 2. Safety lock CLI. Read-only; prints the four reasons the lock
+      #    is currently locked. Exit 0 always — the lock is informational
+      #    here; the FAIL gate is the next step.
+      - name: Safety status
+        run: python main.py safety_status
+
+      # 3. System health CLI. Same module the dashboard uses; runs the
+      #    10 documented checks. Output is captured for the audit log;
+      #    the repo safety check below asserts no FAIL row is present.
+      - name: System health
+        run: python main.py system_health
+
+      # 4. Repository safety check. THIS is the gate that fails the
+      #    build when:
+      #      * Safety lock unlocks unexpectedly.
+      #      * A tracked CSV / JSON cache appears.
+      #      * A hardcoded API key literal appears.
+      #      * Order-placement plumbing is added.
+      #      * An env-var unlock pattern is introduced.
+      #      * A Streamlit API-key input field is added.
+      #      * system_health reports any FAIL row.
+      - name: Repository safety check
+        run: python scripts/ci_safety_check.py
