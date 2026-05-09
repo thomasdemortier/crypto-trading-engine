@@ -486,31 +486,18 @@ RISK_PRESETS: Dict[str, Dict[str, float]] = {
         "max_daily_loss_pct": 0.04, "stop_loss_pct": 0.08,
     },
 }
-RISK_PRESET_NOTES: Dict[str, str] = {
-    "Conservative research": (
-        "Smallest positions, tightest daily loss cap. Hardest to make "
-        "money — easiest to survive a bad period."
-    ),
-    "Balanced research": (
-        "The repo defaults. Reasonable middle ground for testing."
-    ),
-    "Aggressive research": (
-        "Bigger positions and wider stops. Bigger gains AND bigger losses. "
-        "Use only to stress-test, not as a recommendation."
-    ),
-}
+# Single short caption shared by every preset — keeps the sidebar terse.
+RISK_PRESET_CAPTION = "Research setting only. Not a trading recommendation."
+STRATEGY_CAPTION = "Rule-based strategy used for this backtest."
 
-STRATEGY_OPTIONS: List[Tuple[str, str, str]] = [
-    ("rsi_ma_atr", "Current RSI trend strategy",
-     "Looks for pullbacks during an uptrend. It buys only when price is "
-     "above the long-term average and RSI shows weakness."),
-    ("ma_cross", "Moving average trend strategy",
-     "Buys when short-term trend moves above long-term trend."),
-    ("breakout", "Breakout strategy",
-     "Buys when price breaks above a recent high."),
-    ("buy_and_hold", "Buy and hold baseline",
-     "Buys and holds as a benchmark. Used to compare whether trading "
-     "adds value."),
+# (key, display label) — the third "long description" field was removed in the
+# decluttering patch. The Research Lab is where strategies are described in
+# detail; the sidebar dropdown only needs to name them.
+STRATEGY_OPTIONS: List[Tuple[str, str]] = [
+    ("rsi_ma_atr", "Current RSI trend strategy"),
+    ("ma_cross", "Moving average trend strategy"),
+    ("breakout", "Breakout strategy"),
+    ("buy_and_hold", "Buy and hold baseline"),
 ]
 
 st.sidebar.markdown(
@@ -550,12 +537,12 @@ if SIMPLE_MODE:
             "Risk preset",
             options=list(RISK_PRESETS.keys()),
             index=1,  # Balanced research
-            help=("How aggressively the strategy is allowed to size and "
-                  "stop trades. Three preset bundles — pick one. None of "
-                  "these are trading recommendations; they are research "
-                  "configurations."),
+            help=("Bundle of position-size, daily-loss and stop-loss "
+                  "settings. Conservative is smallest, Aggressive is "
+                  "largest. Research configurations only — not trading "
+                  "recommendations."),
         )
-        st.caption(RISK_PRESET_NOTES[risk_preset_label])
+        st.caption(RISK_PRESET_CAPTION)
         # Pull preset values into the same variable names the rest of the
         # script already uses, so the action handlers don't need to care
         # which mode is active.
@@ -569,31 +556,23 @@ if SIMPLE_MODE:
         slippage_pct = float(config.RISK.slippage_pct)
 
     with st.sidebar.expander("Strategy style", expanded=True):
-        strategy_label_to_key = {label: key for key, label, _ in STRATEGY_OPTIONS}
+        strategy_label_to_key = {label: key for key, label in STRATEGY_OPTIONS}
         strategy_label = st.selectbox(
             "Strategy",
-            options=[label for _, label, _ in STRATEGY_OPTIONS],
+            options=[label for _, label in STRATEGY_OPTIONS],
             index=0,
-            help=("Which trading rule to use. The risk engine, fees, and "
-                  "slippage are identical for every strategy — only the "
+            help=("Which trading rule to use. Risk engine, fees and "
+                  "slippage are identical across strategies — only the "
                   "buy/sell logic differs."),
         )
         strategy_key = strategy_label_to_key[strategy_label]
-        # Show the chosen strategy's plain-English description.
-        for _key, _label, _desc in STRATEGY_OPTIONS:
-            if _key == strategy_key:
-                st.caption(_desc)
-                break
+        st.caption(STRATEGY_CAPTION)
         # Strategy parameters in Simple Mode = repo defaults.
         rsi_buy = int(config.STRATEGY.rsi_buy_threshold)
         rsi_sell = int(config.STRATEGY.rsi_sell_threshold)
         atr_pct_max = float(config.STRATEGY.atr_pct_max)
 
-    st.sidebar.info(
-        "Advanced parameters are hidden. Switch to Advanced Mode to edit "
-        "RSI, ATR, slippage, fees, and stop-loss settings.",
-        icon="ℹ️",
-    )
+    st.sidebar.caption("Switch to Advanced for RSI, ATR, fees, slippage, stop-loss.")
 else:
     # ---------- Advanced Mode controls — every original control intact ----
     with st.sidebar.expander("Strategy parameters", expanded=False):
@@ -702,9 +681,7 @@ with st.sidebar.expander("Research lab", expanded=False):
         help="Pick which cached timeframes the research lab should use.",
     )
 
-st.sidebar.caption(
-    "Paper-only research tool. No live trading. No API keys are accepted."
-)
+st.sidebar.caption("Paper only. No live trading.")
 
 
 # ---------------------------------------------------------------------------
@@ -954,33 +931,14 @@ st.markdown(
 
 
 # ---------------------------------------------------------------------------
-# "What am I looking at?" — plain-English orientation for new visitors.
-# Collapsible so it doesn't clutter the dashboard for repeat users.
+# Quick guide — collapsed by default; opens to 4 short bullets only.
 # ---------------------------------------------------------------------------
-with st.expander("What am I looking at?", expanded=False):
+with st.expander("Quick guide", expanded=False):
     st.markdown(
-        """
-        - **This is a research dashboard, not a money-making bot.** Nothing
-          here places real orders. Every result is a simulation against
-          historical candle data.
-        - **Every strategy is tested against buy-and-hold** (the price went
-          up by X%, the strategy returned Y%). The benchmark is what you
-          would have made by simply holding the same assets over the same
-          dates with no trading.
-        - **If "Strategy vs B&H" is negative, the strategy is worse than
-          simply holding** during this exact tested window. Trading cost
-          you more than it added.
-        - **A low max drawdown is not automatically good.** A strategy
-          that barely trades will look "safe" but also miss most of the
-          upside — that's not a real edge, just inactivity.
-        - **A strategy with too few closed trades is statistically weak.**
-          Five lucky trades prove nothing. The Research Lab flags any run
-          with under 10 round-trips as inconclusive.
-        - **The current incumbent strategy has been underperforming
-          buy-and-hold** in every tested window so far. The Research Lab
-          tab makes that explicit and unambiguous — see the FAIL/PASS
-          verdicts for the full picture.
-        """
+        "- This is a research dashboard, not live trading.\n"
+        "- *Strategy vs buy and hold* shows whether trading added value.\n"
+        "- Low drawdown can be misleading if the strategy barely trades.\n"
+        "- Run **Research Lab** for stronger validation."
     )
 
 
@@ -1046,85 +1004,35 @@ else:
     st.markdown(f"<div class='hero-grid'>{''.join(cards)}</div>",
                 unsafe_allow_html=True)
 
-    # ---- Interpretation card --------------------------------------------
-    # Plain-English read of the result, generated from the same metrics shown
-    # above. Conservative: does not call anything "good" unless evidence
-    # supports it; explicitly flags low trade counts and low exposure.
+    # ---- Interpretation card (max 3 bullets) ----------------------------
     def _interpret(m: dict) -> Tuple[str, List[str]]:
         tot = float(m.get("total_return_pct", 0.0))
         bh = float(m.get("buy_and_hold_return_pct", 0.0))
         diff = float(m.get("strategy_vs_bh_pct", 0.0))
         n_trades = int(m.get("num_trades", 0))
-        max_dd = float(m.get("max_drawdown_pct", 0.0))
         exposure = float(m.get("exposure_time_pct", 0.0))
 
-        bits: List[str] = []
-        bits.append(
-            f"The strategy returned **{tot:+.2f}%**, while buy-and-hold "
-            f"returned **{bh:+.2f}%** over the same exact dates."
-        )
-        if diff < -1:
+        bits: List[str] = [
+            f"Strategy returned **{tot:+.2f}%** vs buy and hold **{bh:+.2f}%**.",
+        ]
+        if n_trades < 10 or exposure < 10:
             bits.append(
-                f"That is **{abs(diff):.2f}% worse than simply holding** — "
-                f"the trading rules cost you money relative to doing nothing."
-            )
-        elif diff > 1:
-            bits.append(
-                f"That is **{diff:.2f}% better than buy-and-hold** in this "
-                f"window. One window is not enough evidence — see the "
-                f"Research Lab for cross-period checks."
-            )
-        else:
-            bits.append("The strategy roughly matched the benchmark.")
-
-        if exposure < 10:
-            bits.append(
-                f"Exposure time was only **{exposure:.1f}%** — the strategy "
-                f"barely had money in the market. Low risk, but also no "
-                f"meaningful test of an edge."
-            )
-        elif exposure < 40:
-            bits.append(
-                f"Exposure time was **{exposure:.1f}%** — the strategy "
-                f"sat in cash for most of the period."
+                f"Only **{n_trades}** closed trade(s) and **{exposure:.1f}%** "
+                f"exposure — evidence is statistically weak."
             )
 
-        if n_trades < 10:
-            bits.append(
-                f"Only **{n_trades} closed round-trip(s)** — that is "
-                f"statistically too few to claim an edge either way. "
-                f"Treat the numbers above as anecdote, not evidence."
-            )
-
-        if abs(max_dd) < 1 and exposure < 30:
-            bits.append(
-                "The tiny drawdown is misleading — it reflects how little "
-                "the strategy traded, not how well it managed risk."
-            )
-
-        # Bottom-line verdict.
         if diff < -1 or n_trades < 10:
-            verdict = (
-                "**Verdict: based on this single test the strategy is not "
-                "worth trading.** Run the Research Lab for a deeper picture."
-            )
+            verdict = "**Verdict: not worth trading as configured.**"
         elif diff > 1 and n_trades >= 10:
-            verdict = (
-                "**Verdict: encouraging in this one window, but not yet "
-                "conclusive.** Run the Research Lab to test against other "
-                "timeframes and out-of-sample windows."
-            )
+            verdict = "**Verdict: encouraging in this window — needs Research Lab validation.**"
         else:
-            verdict = (
-                "**Verdict: inconclusive.** Run the Research Lab for "
-                "walk-forward and robustness checks."
-            )
+            verdict = "**Verdict: inconclusive — run Research Lab.**"
         return verdict, bits
 
     with st.container(border=True):
         st.markdown(
             "<div class='section-h'><span class='dot'></span>"
-            "Interpretation (plain English)</div>",
+            "Interpretation</div>",
             unsafe_allow_html=True,
         )
         verdict_md, bits_md = _interpret(m)
@@ -1565,11 +1473,8 @@ with st.container(border=True):
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<div class='section-sub'>Five honest research lenses + a "
-        "PASS/FAIL/INCONCLUSIVE summary. None of these tabs optimise "
-        "parameters or pick a winner — they only measure the fixed "
-        "strategy as configured. Run <b>Run research lab</b> in the "
-        "sidebar to populate.</div>",
+        "<div class='section-sub'>Five lenses on the strategy. "
+        "Run <b>Run research lab</b> in the sidebar to populate.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1585,38 +1490,14 @@ with st.container(border=True):
     rl_mc_df = _research_csv("monte_carlo_results.csv")
     rl_mcs_df = _research_csv("monte_carlo_simulations.csv")
 
-    # Plain-English explainers shown at the top of each Research Lab tab.
+    # One-line explainer shown at the top of each Research Lab tab.
     RL_TAB_EXPLAINERS: Dict[str, str] = {
-        "timeframe": (
-            "Checks whether the strategy works on 1h, 4h, and 1d candles. "
-            "A real edge should not only work on one timeframe."
-        ),
-        "walk_forward": (
-            "Tests the strategy on rolling future periods. This is closer "
-            "to real-world testing than one big backtest — performance "
-            "should hold up window after window."
-        ),
-        "strategy": (
-            "Compares different rule-based strategies using the same risk "
-            "engine, fees, and slippage. Differences are pure strategy, "
-            "not execution model."
-        ),
-        "robustness": (
-            "Changes parameters slightly to see whether performance "
-            "collapses. Fragile strategies that only work on one exact "
-            "parameter set are dangerous in the real world."
-        ),
-        "monte_carlo": (
-            "Shuffles historical trade results to estimate how unstable "
-            "the outcome could be. If a different ordering of the same "
-            "trades produces a wide distribution, the headline number was "
-            "lucky."
-        ),
-        "summary": (
-            "Plain-English verdict across all tests. PASS / FAIL / "
-            "INCONCLUSIVE labels are conservative on purpose — borderline "
-            "results are not declared good."
-        ),
+        "timeframe": "Checks whether results hold across 1h, 4h and 1d.",
+        "walk_forward": "Tests future windows instead of one big backtest.",
+        "strategy": "Compares rule-based strategies using the same risk engine.",
+        "robustness": "Checks whether small parameter changes break the result.",
+        "monte_carlo": "Stress-tests trade-result randomness.",
+        "summary": "Plain-English PASS / FAIL verdict.",
     }
 
     def _explainer(key: str) -> None:
@@ -1910,26 +1791,10 @@ with st.container(border=True):
         if rl_summary_df.empty:
             st.info("No research summary yet. Run **Run research lab**.")
         else:
-            st.markdown(
-                "<div class='section-sub'>Conservative PASS / FAIL / "
-                "INCONCLUSIVE on each lens. <b>FAIL</b> means the evidence is "
-                "actively against; <b>INCONCLUSIVE</b> means insufficient "
-                "data (often too few trades).</div>",
-                unsafe_allow_html=True,
-            )
             VERDICT_PLAIN: Dict[str, str] = {
-                "PASS": (
-                    "The strategy passed this check based on the current "
-                    "rules, but it still needs more validation."
-                ),
-                "FAIL": (
-                    "The strategy failed this check. The evidence is "
-                    "against it for this lens."
-                ),
-                "INCONCLUSIVE": (
-                    "The result is not reliable — usually because there "
-                    "are too few trades or too little data to call."
-                ),
+                "PASS": "Passed — needs more validation.",
+                "FAIL": "Failed — evidence is against it.",
+                "INCONCLUSIVE": "Not reliable — too few trades or too little data.",
             }
             for _, r in rl_summary_df.iterrows():
                 v = str(r["verdict"])
