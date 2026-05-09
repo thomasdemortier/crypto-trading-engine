@@ -398,12 +398,67 @@ def _short_iso(s: Optional[str]) -> str:
         return str(s)
 
 
+def _now_utc_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _queue_flash(kind: str, text: str) -> None:
+    """Store a one-shot message that survives the next st.rerun() and is
+    displayed once at the top of the main area before being cleared."""
+    st.session_state["flash_message"] = (kind, text)
+
+
+# Initialise the dashboard-refresh timestamp once per browser session.
+if "last_dashboard_refresh_iso" not in st.session_state:
+    st.session_state["last_dashboard_refresh_iso"] = _now_utc_iso()
+
+
 # ---------------------------------------------------------------------------
-# Sidebar — controls grouped into expandable sections
+# Sidebar — Status block + controls grouped into expandable sections
 # ---------------------------------------------------------------------------
+
+# Look up status-block facts before sidebar renders. We'll re-read meta later
+# in the script, but the sidebar status block needs them up-front.
+_meta_for_status = _read_meta()
+_status_last_run_iso = (_meta_for_status or {}).get("run_timestamp_iso")
+_status_fresh_iso = st.session_state.get("fresh_run_iso")
+if not _meta_for_status:
+    _status_source = ("amber", "No backtest yet")
+elif _status_fresh_iso and _status_fresh_iso == _status_last_run_iso:
+    _status_source = ("pos", "Fresh this session")
+else:
+    _status_source = ("grey", "Loaded from saved files")
+
+_status_pill_class = {
+    "pos": "pill-pos", "amber": "pill-amber", "grey": "pill-grey",
+}[_status_source[0]]
+
+st.sidebar.markdown(
+    f"""
+    <div style='background:rgba(15,23,42,0.7);border:1px solid #1f2937;
+                border-radius:10px;padding:0.7rem 0.85rem;margin-bottom:0.8rem;'>
+      <div style='font-size:0.72rem;color:#9ca3af;text-transform:uppercase;
+                  letter-spacing:0.07em;font-weight:700;'>App status</div>
+      <div style='margin-top:0.45rem;font-size:0.82rem;color:#e5e7eb;'>
+        <div><span style='color:#9ca3af;'>Last refresh:</span>
+             {_short_iso(st.session_state.get('last_dashboard_refresh_iso'))}</div>
+        <div style='margin-top:0.2rem;'><span style='color:#9ca3af;'>Last backtest:</span>
+             {_short_iso(_status_last_run_iso) if _status_last_run_iso else 'no run yet'}</div>
+        <div style='margin-top:0.5rem;'>
+          <span class='pill {_status_pill_class}'>
+            <span class='pill-dot'></span>{_status_source[1]}
+          </span>
+        </div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.sidebar.markdown(
     "<div style='font-size:1.05rem;font-weight:700;color:#e5e7eb;"
-    "padding:0.4rem 0 0.6rem 0;'>Controls</div>",
+    "padding:0.2rem 0 0.6rem 0;'>Controls</div>",
     unsafe_allow_html=True,
 )
 
@@ -463,9 +518,14 @@ with st.sidebar.expander("Actions", expanded=True):
         "Run backtest", type="primary", use_container_width=True,
         help="Run the backtester for the selected assets and timeframe.",
     )
-    do_refresh = st.button(
-        "Refresh data", use_container_width=True,
-        help="Re-download candles from the exchange.",
+    do_refresh_dashboard = st.button(
+        "Refresh dashboard", use_container_width=True,
+        help=("Reload saved artifacts from disk and refresh UI state. "
+              "Use this if numbers look stale. Does not re-download data."),
+    )
+    do_refresh_data = st.button(
+        "Refresh market data", use_container_width=True,
+        help="Re-download OHLCV candles from the exchange (public endpoints only).",
     )
     do_paper_tick = st.button(
         "Run paper tick", use_container_width=True,
@@ -505,22 +565,47 @@ def _build_runtime_configs():
     return strat_cfg, risk_cfg
 
 
-if do_refresh:
+if do_refresh_dashboard:
+    # Reload saved artifacts + clear caches; do NOT re-download market data.
+    try:
+        _load_candles_cached.clear()
+    except Exception:
+        pass
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    st.session_state["last_dashboard_refresh_iso"] = _now_utc_iso()
+    _queue_flash("success", "Dashboard refreshed from saved artifacts.")
+    st.rerun()
+
+if do_refresh_data:
     if not asset_choice:
-        st.warning("Pick at least one asset to refresh.")
+        _queue_flash("warning", "Pick at least one asset to refresh.")
+        st.rerun()
     else:
         with st.spinner("Downloading candles…"):
             try:
                 paths = data_collector.download_all(
                     assets=asset_choice, timeframes=[timeframe], refresh=True,
                 )
-                st.success(f"Refreshed {len(paths)} dataset(s).")
+                try:
+                    _load_candles_cached.clear()
+                except Exception:
+                    pass
+                _queue_flash(
+                    "success",
+                    f"Market data refreshed successfully — {len(paths)} dataset(s).",
+                )
+                st.rerun()
             except Exception as e:
-                st.error(f"Refresh failed: {e}")
+                _queue_flash("error", f"Market data refresh failed: {e}")
+                st.rerun()
 
 if do_backtest:
     if not asset_choice:
-        st.warning("Pick at least one asset to backtest.")
+        _queue_flash("warning", "Pick at least one asset to backtest.")
+        st.rerun()
     else:
         strat_cfg, risk_cfg = _build_runtime_configs()
         with st.spinner("Running backtest…"):
@@ -544,23 +629,28 @@ if do_backtest:
                 )
                 performance.save_per_asset_metrics(pa_df)
                 st.session_state["fresh_run_iso"] = art.meta.get("run_timestamp_iso")
-                st.success(
-                    f"Backtest complete — final equity: "
-                    f"{metrics.final_portfolio_value:,.2f} USDT"
+                st.session_state["last_dashboard_refresh_iso"] = _now_utc_iso()
+                _queue_flash(
+                    "success",
+                    f"Backtest completed successfully — final equity "
+                    f"{metrics.final_portfolio_value:,.2f} USDT.",
                 )
+                st.rerun()
             except Exception as e:
-                st.error(f"Backtest failed: {e}")
+                _queue_flash("error", f"Backtest failed: {e}")
+                st.rerun()
 
 if do_paper_tick:
     with st.spinner("Running paper tick…"):
         try:
-            result = paper_trader.run_tick(
+            paper_trader.run_tick(
                 timeframe=timeframe, assets=asset_choice, refresh=True,
             )
-            st.success("Paper tick complete.")
-            st.json(result)
+            _queue_flash("success", "Paper tick completed.")
+            st.rerun()
         except Exception as e:
-            st.error(f"Paper tick failed: {e}")
+            _queue_flash("error", f"Paper tick failed: {e}")
+            st.rerun()
 
 if do_clear:
     targets: List[Path] = [
@@ -573,19 +663,32 @@ if do_clear:
     ]
     targets += list(config.RESULTS_DIR.glob("price_*.csv"))
     removed = 0
+    errors: List[str] = []
     for p in targets:
         try:
             if p.exists():
                 p.unlink()
                 removed += 1
         except Exception as e:
-            st.warning(f"Could not delete {p.name}: {e}")
+            errors.append(f"{p.name}: {e}")
     st.session_state.pop("fresh_run_iso", None)
     try:
         _load_candles_cached.clear()
     except Exception:
         pass
-    st.success(f"Cleared {removed} saved result file(s). Cached candles kept.")
+    st.session_state["last_dashboard_refresh_iso"] = _now_utc_iso()
+    if errors:
+        _queue_flash(
+            "error",
+            f"Cleared {removed} file(s). Errors: {'; '.join(errors)}",
+        )
+    else:
+        _queue_flash(
+            "success",
+            f"Saved results cleared ({removed} file(s)). "
+            "Run a new backtest.",
+        )
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +711,18 @@ last_run_iso = (meta or {}).get("run_timestamp_iso")
 
 fresh_iso = st.session_state.get("fresh_run_iso")
 is_fresh = bool(fresh_iso) and fresh_iso == last_run_iso
+
+
+# ---------------------------------------------------------------------------
+# One-shot flash message (queued by an action handler before st.rerun)
+# ---------------------------------------------------------------------------
+_flash = st.session_state.pop("flash_message", None)
+if _flash:
+    _kind, _text = _flash
+    if _kind == "success":   st.success(_text, icon="✅")
+    elif _kind == "error":   st.error(_text, icon="🚫")
+    elif _kind == "warning": st.warning(_text, icon="⚠️")
+    else:                    st.info(_text)
 
 
 # ---------------------------------------------------------------------------
