@@ -12,7 +12,10 @@ def _fg_frame(values: list, start_date: str = "2022-01-01") -> pd.DataFrame:
     """Build a sentiment_data_collector-shaped CSV equivalent."""
     n = len(values)
     dates = pd.date_range(start=start_date, periods=n, freq="D", tz="UTC")
-    ts = (dates.view("int64") // 10**6).astype("int64")
+    # Force ns precision: pandas ≥ 2.x returns `datetime64[us, UTC]`,
+    # so a raw `view('int64')` would yield microseconds, not nanoseconds.
+    ts = (dates.astype("datetime64[ns, UTC]").view("int64") // 10**6
+           ).astype("int64")
     return pd.DataFrame({
         "timestamp": ts,
         "date": dates.strftime("%Y-%m-%d"),

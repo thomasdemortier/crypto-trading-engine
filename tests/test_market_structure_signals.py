@@ -22,8 +22,13 @@ def _make_close(n_days: int, drift: float = 0.001, seed: int = 0,
     closes = start * np.cumprod(1.0 + rets)
     end_ts = pd.Timestamp(end, tz="UTC")
     dates = pd.date_range(end=end_ts, periods=n_days, freq="D", tz="UTC")
+    # Pandas ≥ 2.x defaults `pd.date_range` to `datetime64[us, UTC]`,
+    # so `dates.view('int64')` returns microseconds, not nanoseconds.
+    # Force ns precision before the conversion so `// 10**6` always
+    # yields milliseconds, regardless of pandas version.
+    ms = dates.astype("datetime64[ns, UTC]").view("int64") // 10**6
     return pd.DataFrame({
-        "timestamp": dates.view("int64") // 10**6,
+        "timestamp": ms,
         "datetime": dates,
         "open": closes, "high": closes, "low": closes,
         "close": closes, "volume": 1000.0,
@@ -35,7 +40,9 @@ def _ms_payload(n_days: int, base_value: float = 1.0,
     """Return a normalised market-structure series with `n_days` daily rows."""
     end_ts = pd.Timestamp("2025-12-31", tz="UTC")
     dates = pd.date_range(end=end_ts, periods=n_days, freq="D", tz="UTC")
-    ts = (dates.view("int64") // 10**6).astype("int64")
+    # See `_make_close` for the explanation of the ns-precision cast.
+    ts = (dates.astype("datetime64[ns, UTC]").view("int64") // 10**6
+           ).astype("int64")
     values = base_value * (1.0 + slope * np.arange(n_days))
     return pd.DataFrame({
         "timestamp": ts,
@@ -205,8 +212,9 @@ def test_defensive_state_when_btc_below_200d_ma(monkeypatch):
     closes = 100.0 * np.cumprod(1.0 + np.array(rets))
     end_ts = pd.Timestamp("2025-12-31", tz="UTC")
     dates = pd.date_range(end=end_ts, periods=n, freq="D", tz="UTC")
+    ms = dates.astype("datetime64[ns, UTC]").view("int64") // 10**6
     btc = pd.DataFrame({
-        "timestamp": dates.view("int64") // 10**6, "datetime": dates,
+        "timestamp": ms, "datetime": dates,
         "open": closes, "high": closes, "low": closes,
         "close": closes, "volume": 1000.0,
     })
