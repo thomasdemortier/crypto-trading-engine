@@ -2747,6 +2747,188 @@ with st.container(border=True):
 
 
 # ---------------------------------------------------------------------------
+# Sentiment / Fear & Greed overlay research
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Sentiment / Fear &amp; Greed</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>Sentiment overlay on the prior best "
+        "market-structure vol-target allocator. Source: alternative.me "
+        "Fear &amp; Greed (no key, ~8 years daily). <b>Research only — "
+        "no paper trade, no broker.</b></div>",
+        unsafe_allow_html=True,
+    )
+
+    sn_tabs = st.tabs([
+        "Coverage", "F&G history", "State over time", "Now",
+        "Equity vs benchmarks", "Walk-forward",
+        "Placebo", "Scorecard",
+    ])
+
+    sn_cov = _research_csv("sentiment_data_coverage.csv")
+    sn_sig = _research_csv("sentiment_signals.csv")
+    sn_eq = _research_csv("sentiment_allocator_equity_curve.csv")
+    sn_cmp = _research_csv("sentiment_allocator_comparison.csv")
+    sn_wf = _research_csv("sentiment_walk_forward.csv")
+    sn_plac = _research_csv("sentiment_placebo.csv")
+    sn_sc = _research_csv("sentiment_scorecard.csv")
+
+    with sn_tabs[0]:
+        if sn_cov.empty:
+            st.info("No sentiment coverage. Run "
+                     "`python main.py download_sentiment_data --refresh`.")
+        else:
+            cols = [c for c in ["source", "dataset", "row_count",
+                                  "actual_start", "actual_end",
+                                  "coverage_days", "enough_for_research",
+                                  "largest_gap_days", "notes"]
+                     if c in sn_cov.columns]
+            st.dataframe(sn_cov[cols], use_container_width=True,
+                          hide_index=True)
+            n_unusable = int(
+                (~sn_cov["enough_for_research"].astype(bool)).sum())
+            if n_unusable > 0:
+                st.warning(
+                    f"{n_unusable} sentiment dataset(s) below the 4-year "
+                    f"threshold — scorecard verdict will be INCONCLUSIVE.",
+                )
+
+    with sn_tabs[1]:
+        if sn_sig.empty or "fear_greed_value" not in sn_sig.columns:
+            st.info("No F&G signal data yet. Run "
+                     "`python main.py sentiment_signals`.")
+        else:
+            sig = sn_sig.copy()
+            sig["date"] = pd.to_datetime(sig["date"])
+            st.line_chart(sig.set_index("date")[["fear_greed_value"]],
+                            height=240, use_container_width=True)
+            st.caption("Fear & Greed Index (0–100). 25 = extreme fear, "
+                        "75 = extreme greed.")
+
+    with sn_tabs[2]:
+        if sn_sig.empty or "sentiment_state" not in sn_sig.columns:
+            st.info("No sentiment state data yet.")
+        else:
+            dist = (sn_sig["sentiment_state"]
+                     .value_counts(normalize=True) * 100.0)
+            dist_df = (dist.rename("pct_of_rows").reset_index()
+                        .rename(columns={"index": "sentiment_state"}))
+            st.dataframe(dist_df, use_container_width=True, hide_index=True)
+            tail_cols = [c for c in ["timestamp", "date",
+                            "fear_greed_value", "sentiment_state",
+                            "fg_7d_change", "fg_30d_mean", "fg_90d_zscore"]
+                          if c in sn_sig.columns]
+            st.dataframe(sn_sig[tail_cols].tail(60),
+                          use_container_width=True, hide_index=True,
+                          height=320)
+
+    with sn_tabs[3]:
+        if sn_sig.empty:
+            st.info("No signal data yet.")
+        else:
+            last = sn_sig.iloc[-1]
+            cols_n = st.columns(3)
+            cols_n[0].metric("Current state",
+                              str(last.get("sentiment_state", "—")))
+            v = last.get("fear_greed_value")
+            cols_n[1].metric("F&G value",
+                              f"{int(v)}" if pd.notna(v) else "—")
+            cls = last.get("fear_greed_classification") or "—"
+            cols_n[2].metric("F&G class", str(cls))
+            cols_s = st.columns(3)
+            for i, k in enumerate(("fg_7d_change", "fg_30d_mean",
+                                     "fg_90d_zscore")):
+                v = last.get(k)
+                cols_s[i].metric(k.replace("_", " "),
+                                  f"{float(v):.2f}" if pd.notna(v) else "—")
+
+    with sn_tabs[4]:
+        if sn_eq.empty:
+            st.info("No equity curve. Run "
+                     "`python main.py sentiment_allocator`.")
+        else:
+            try:
+                fig = plotting.equity_curve_fig(sn_eq, float(starting_capital))
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.dataframe(sn_eq.tail(50), use_container_width=True,
+                              hide_index=True)
+        if not sn_cmp.empty:
+            st.dataframe(sn_cmp, use_container_width=True, hide_index=True)
+
+    with sn_tabs[5]:
+        if sn_wf.empty:
+            st.info("No walk-forward results. Run "
+                     "`python main.py sentiment_walk_forward`.")
+        else:
+            cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                    "oos_return_pct", "btc_oos_return_pct",
+                    "basket_oos_return_pct", "simple_oos_return_pct",
+                    "vol_target_oos_return_pct",
+                    "beats_btc", "beats_basket", "beats_simple_momentum",
+                    "beats_vol_target", "n_rebalances"]
+                    if c in sn_wf.columns]
+            st.dataframe(sn_wf[cols], use_container_width=True,
+                          hide_index=True)
+
+    with sn_tabs[6]:
+        if sn_plac.empty:
+            st.info("No placebo data. Run "
+                     "`python main.py sentiment_placebo`.")
+        else:
+            summary = sn_plac.iloc[[0]] if len(sn_plac) > 0 else pd.DataFrame()
+            if not summary.empty:
+                cols_s = [c for c in ["strategy_return_pct",
+                          "placebo_median_return_pct",
+                          "strategy_max_drawdown_pct",
+                          "placebo_median_drawdown_pct",
+                          "strategy_beats_median_return"]
+                          if c in summary.columns]
+                st.dataframe(summary[cols_s], use_container_width=True,
+                              hide_index=True)
+            seed_rows = (sn_plac[sn_plac["strategy"] == "placebo_seed_runs"]
+                          if "strategy" in sn_plac.columns else pd.DataFrame())
+            if not seed_rows.empty:
+                st.dataframe(seed_rows[["seed", "placebo_return_pct",
+                                          "placebo_max_drawdown_pct",
+                                          "placebo_sharpe"]],
+                              use_container_width=True, hide_index=True,
+                              height=240)
+
+    with sn_tabs[7]:
+        if sn_sc.empty:
+            st.info("No scorecard yet. Run "
+                     "`python main.py sentiment_scorecard`.")
+        else:
+            row = sn_sc.iloc[0]
+            verdict = str(row.get("verdict", "INCONCLUSIVE"))
+            color = {
+                "PASS": "#10b981", "WATCHLIST": "#f59e0b",
+                "FAIL": "#f43f5e", "INCONCLUSIVE": "#94a3b8",
+            }.get(verdict, "#94a3b8")
+            st.markdown(
+                f"<div style='padding:8px 12px;border-radius:8px;"
+                f"background:{color}22;color:{color};display:inline-block;"
+                f"font-weight:600'>Verdict: {verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            st.write({k: row.get(k) for k in [
+                "n_windows", "avg_oos_return_pct", "avg_oos_drawdown_pct",
+                "pct_windows_beat_btc", "pct_windows_beat_basket",
+                "pct_windows_beat_simple_momentum",
+                "pct_windows_beat_vol_target",
+                "stability_score_pct", "total_rebalances",
+                "strategy_full_drawdown_pct", "btc_full_drawdown_pct",
+                "dd_gap_pp", "beats_placebo_median",
+                "coverage_note", "checks_passed", "checks_total",
+                "reason"] if k in sn_sc.columns})
+
+
+# ---------------------------------------------------------------------------
 # Paper-trader state + risk dashboard
 # ---------------------------------------------------------------------------
 paper_state = paper_trader.get_state_for_display()
