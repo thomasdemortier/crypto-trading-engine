@@ -17,7 +17,31 @@ A research-only backtesting and paper-trading engine for **BTC/USDT** and **ETH/
 - **BTC buy-and-hold remains the strongest practical baseline.**
 - Future work should use **new signal classes** (funding, on-chain flows, sentiment, real BTC dominance), not further tweaking of price-based TA on the same universe.
 
-For the full evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+For the full v1 evidence see [`reports/final_crypto_research_report.md`](reports/final_crypto_research_report.md).
+
+### Branch experiment: market-structure allocator (DefiLlama + Blockchain.com)
+
+`research/strategy-2-market-structure` tests a state-driven allocator
+(BTC / alt-basket / cash) keyed on free-tier on-chain liquidity (TVL,
+stablecoin supply) and BTC market-structure metrics (hash rate,
+transactions, market cap), plus alt-basket breadth. **Verdict: FAIL**
+(6 of 9 scorecard checks). The allocator beats simple momentum (57 % of
+OOS windows) and the random state-picker placebo, and holds drawdown
+11 pp tighter than BTC's; but it loses to BTC in 11 of 14 windows, the
+basket in 9, and registers 0 % stability vs the 60 % bar. Full report:
+[`reports/market_structure_research_report.md`](reports/market_structure_research_report.md).
+
+### Branch follow-up: vol-target market-structure allocator
+
+Same signal, softer exposure bands (alt_risk_on 70 % alts + 30 % BTC,
+neutral 70 % BTC, defensive 30 % BTC, etc.). **Verdict: FAIL — but the
+closest result this project has produced.** **8 of 10 scorecard checks
+pass.** Full-window return +53 % (vs original allocator +0.75 %, BTC
++75 %); drawdown 17 pp tighter than BTC's; beats basket, simple
+momentum, the original allocator, AND the placebo in the majority of
+OOS windows. Still loses to BTC in 11 of 14 windows; stability 0 %.
+Full report:
+[`reports/market_structure_vol_target_report.md`](reports/market_structure_vol_target_report.md).
 
 **Latest measured results** (1459 days of BTC + ETH 1h / 4h / 1d, plus 8 alts at 1d):
 

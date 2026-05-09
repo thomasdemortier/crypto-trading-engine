@@ -2747,6 +2747,275 @@ with st.container(border=True):
 
 
 # ---------------------------------------------------------------------------
+# Market structure — TVL / stables / on-chain regime allocator
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Market Structure</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>State-driven BTC / alt-basket / cash "
+        "allocator built on free public data: DefiLlama (TVL, stablecoin "
+        "supply), Blockchain.com (BTC market cap, hash rate, "
+        "transactions/day), and the cached Binance daily universe. "
+        "<b>Research only — no paper trade, no broker.</b></div>",
+        unsafe_allow_html=True,
+    )
+
+    ms_tabs = st.tabs([
+        "Coverage", "State over time", "Now",
+        "Trends", "Equity vs benchmarks",
+        "Walk-forward", "Placebo", "Scorecard",
+        "Vol-target",
+    ])
+
+    ms_cov = _research_csv("market_structure_data_coverage.csv")
+    ms_sig = _research_csv("market_structure_signals.csv")
+    ms_eq = _research_csv("market_structure_allocator_equity_curve.csv")
+    ms_cmp = _research_csv("market_structure_allocator_comparison.csv")
+    ms_wf = _research_csv("market_structure_walk_forward.csv")
+    ms_plac = _research_csv("market_structure_placebo.csv")
+    ms_sc = _research_csv("market_structure_scorecard.csv")
+
+    with ms_tabs[0]:
+        if ms_cov.empty:
+            st.info("No coverage data. Run "
+                     "`python main.py download_market_structure_data`.")
+        else:
+            cols = [c for c in ["source", "dataset", "row_count",
+                                  "coverage_days", "enough_for_research",
+                                  "largest_gap_days", "notes"]
+                     if c in ms_cov.columns]
+            st.dataframe(ms_cov[cols], use_container_width=True,
+                          hide_index=True)
+            n_unusable = int((~ms_cov["enough_for_research"].astype(bool)).sum())
+            if n_unusable > 0:
+                st.warning(
+                    f"{n_unusable} dataset(s) below the 4-year threshold — "
+                    f"scorecard verdict will be INCONCLUSIVE until coverage is "
+                    f"restored.",
+                )
+
+    with ms_tabs[1]:
+        if ms_sig.empty or "market_structure_state" not in ms_sig.columns:
+            st.info("No signal data yet. Run "
+                     "`python main.py market_structure_signals`.")
+        else:
+            dist = (ms_sig["market_structure_state"]
+                     .value_counts(normalize=True) * 100.0)
+            dist_df = (dist.rename("pct_of_rows").reset_index()
+                        .rename(columns={"index": "market_structure_state"}))
+            st.dataframe(dist_df, use_container_width=True, hide_index=True)
+            tail_cols = [c for c in ["timestamp", "date",
+                            "market_structure_state", "btc_above_200d_ma",
+                            "alt_basket_above_200d_ma_pct",
+                            "alt_basket_vs_btc_90d"]
+                          if c in ms_sig.columns]
+            st.dataframe(ms_sig[tail_cols].tail(60),
+                          use_container_width=True, hide_index=True,
+                          height=320)
+
+    with ms_tabs[2]:
+        if ms_sig.empty:
+            st.info("No signal data yet.")
+        else:
+            last = ms_sig.iloc[-1]
+            cols_n = st.columns(3)
+            cols_n[0].metric("Current state",
+                              str(last.get("market_structure_state", "—")))
+            cols_n[1].metric("BTC above 200d MA",
+                              str(bool(last.get("btc_above_200d_ma", False))))
+            breadth = last.get("alt_basket_above_200d_ma_pct")
+            cols_n[2].metric(
+                "Alt breadth (% above 200d MA)",
+                f"{float(breadth)*100:.1f}%" if pd.notna(breadth) else "—",
+            )
+            cols_s = st.columns(4)
+            for i, k in enumerate(("liquidity_score", "onchain_health_score",
+                                     "alt_risk_score", "defensive_score")):
+                v = last.get(k)
+                cols_s[i].metric(k.replace("_", " "),
+                                  f"{float(v):.2f}" if pd.notna(v) else "—")
+
+    with ms_tabs[3]:
+        if ms_sig.empty:
+            st.info("No trend data yet.")
+        else:
+            sig = ms_sig.copy()
+            sig["date"] = pd.to_datetime(sig["date"])
+            charts = [
+                ("total_tvl", "Total TVL"),
+                ("stablecoin_supply", "Stablecoin supply"),
+                ("btc_hash_rate", "BTC hash rate"),
+                ("btc_transactions", "BTC transactions / day"),
+                ("alt_basket_above_200d_ma_pct", "Alt breadth"),
+            ]
+            for col, label in charts:
+                if col in sig.columns and not sig[col].dropna().empty:
+                    st.line_chart(sig.set_index("date")[[col]],
+                                    height=180, use_container_width=True)
+                    st.caption(label)
+
+    with ms_tabs[4]:
+        if ms_eq.empty:
+            st.info("No allocator equity curve yet. Run "
+                     "`python main.py market_structure_allocator`.")
+        else:
+            try:
+                fig = plotting.equity_curve_fig(ms_eq, float(starting_capital))
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.dataframe(ms_eq.tail(50), use_container_width=True,
+                              hide_index=True)
+        if not ms_cmp.empty:
+            st.dataframe(ms_cmp, use_container_width=True, hide_index=True)
+
+    with ms_tabs[5]:
+        if ms_wf.empty:
+            st.info("No walk-forward results. Run "
+                     "`python main.py market_structure_walk_forward`.")
+        else:
+            cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                    "oos_return_pct", "btc_oos_return_pct",
+                    "basket_oos_return_pct", "simple_oos_return_pct",
+                    "beats_btc", "beats_basket", "beats_simple_momentum",
+                    "n_rebalances"] if c in ms_wf.columns]
+            st.dataframe(ms_wf[cols], use_container_width=True,
+                          hide_index=True)
+
+    with ms_tabs[6]:
+        if ms_plac.empty:
+            st.info("No placebo data yet. Run "
+                     "`python main.py market_structure_placebo`.")
+        else:
+            summary = ms_plac.iloc[[0]] if len(ms_plac) > 0 else pd.DataFrame()
+            if not summary.empty:
+                cols_s = [c for c in ["strategy_return_pct",
+                          "placebo_median_return_pct",
+                          "strategy_max_drawdown_pct",
+                          "placebo_median_drawdown_pct",
+                          "strategy_beats_median_return"]
+                          if c in summary.columns]
+                st.dataframe(summary[cols_s], use_container_width=True,
+                              hide_index=True)
+            seed_rows = (ms_plac[ms_plac["strategy"] == "placebo_seed_runs"]
+                          if "strategy" in ms_plac.columns else pd.DataFrame())
+            if not seed_rows.empty:
+                st.dataframe(seed_rows[["seed", "placebo_return_pct",
+                                          "placebo_max_drawdown_pct",
+                                          "placebo_sharpe"]],
+                              use_container_width=True, hide_index=True,
+                              height=240)
+
+    # Vol-target variant artifacts (loaded once for the comparison tab).
+    msv_eq = _research_csv("market_structure_vol_target_equity_curve.csv")
+    msv_cmp = _research_csv("market_structure_vol_target_comparison.csv")
+    msv_wf = _research_csv("market_structure_vol_target_walk_forward.csv")
+    msv_plac = _research_csv("market_structure_vol_target_placebo.csv")
+    msv_sc = _research_csv("market_structure_vol_target_scorecard.csv")
+
+    with ms_tabs[7]:
+        if ms_sc.empty:
+            st.info("No scorecard yet. Run "
+                     "`python main.py market_structure_scorecard`.")
+        else:
+            row = ms_sc.iloc[0]
+            verdict = str(row.get("verdict", "INCONCLUSIVE"))
+            color = {
+                "PASS": "#10b981", "WATCHLIST": "#f59e0b",
+                "FAIL": "#f43f5e", "INCONCLUSIVE": "#94a3b8",
+            }.get(verdict, "#94a3b8")
+            st.markdown(
+                f"<div style='padding:8px 12px;border-radius:8px;"
+                f"background:{color}22;color:{color};display:inline-block;"
+                f"font-weight:600'>Verdict: {verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            st.write({k: row.get(k) for k in [
+                "n_windows", "avg_oos_return_pct", "avg_oos_drawdown_pct",
+                "pct_windows_beat_btc", "pct_windows_beat_basket",
+                "pct_windows_beat_simple_momentum",
+                "stability_score_pct", "total_rebalances",
+                "strategy_full_drawdown_pct", "btc_full_drawdown_pct",
+                "dd_gap_pp", "beats_placebo_median",
+                "coverage_note", "checks_passed", "checks_total",
+                "reason"] if k in ms_sc.columns})
+
+    with ms_tabs[8]:
+        st.markdown("**Vol-target allocator (softer exposure bands)** "
+                     "vs original allocator and benchmarks.")
+        if msv_cmp.empty and msv_wf.empty and msv_sc.empty:
+            st.info("No vol-target results yet. Run "
+                     "`python main.py market_structure_vol_target` then "
+                     "`market_structure_vol_target_walk_forward`, "
+                     "`market_structure_vol_target_placebo`, "
+                     "`market_structure_vol_target_scorecard`.")
+        # 1. Equity comparison
+        if not msv_eq.empty:
+            try:
+                fig = plotting.equity_curve_fig(msv_eq, float(starting_capital))
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.dataframe(msv_eq.tail(50), use_container_width=True,
+                              hide_index=True)
+        # 2. Single-window comparison table (includes original allocator)
+        if not msv_cmp.empty:
+            st.markdown("**Full-window comparison:**")
+            st.dataframe(msv_cmp, use_container_width=True, hide_index=True)
+        # 3. Walk-forward comparison (per-window beats_original_allocator)
+        if not msv_wf.empty:
+            st.markdown("**Walk-forward (vs original allocator + benchmarks):**")
+            cols = [c for c in ["window", "oos_start_iso", "oos_end_iso",
+                    "oos_return_pct", "btc_oos_return_pct",
+                    "basket_oos_return_pct", "simple_oos_return_pct",
+                    "original_allocator_oos_return_pct",
+                    "beats_btc", "beats_basket",
+                    "beats_simple_momentum", "beats_original_allocator",
+                    "n_rebalances"] if c in msv_wf.columns]
+            st.dataframe(msv_wf[cols], use_container_width=True,
+                          hide_index=True)
+        # 4. Placebo summary
+        if not msv_plac.empty:
+            st.markdown("**Placebo (5-state random allocator):**")
+            summary = (msv_plac.iloc[[0]] if len(msv_plac) > 0
+                        else pd.DataFrame())
+            cols_s = [c for c in ["strategy_return_pct",
+                      "placebo_median_return_pct",
+                      "strategy_max_drawdown_pct",
+                      "placebo_median_drawdown_pct",
+                      "strategy_beats_median_return"]
+                      if c in summary.columns]
+            if not summary.empty:
+                st.dataframe(summary[cols_s], use_container_width=True,
+                              hide_index=True)
+        # 5. Verdict box
+        if not msv_sc.empty:
+            row = msv_sc.iloc[0]
+            verdict = str(row.get("verdict", "INCONCLUSIVE"))
+            color = {
+                "PASS": "#10b981", "WATCHLIST": "#f59e0b",
+                "FAIL": "#f43f5e", "INCONCLUSIVE": "#94a3b8",
+            }.get(verdict, "#94a3b8")
+            st.markdown(
+                f"<div style='padding:8px 12px;border-radius:8px;"
+                f"background:{color}22;color:{color};display:inline-block;"
+                f"font-weight:600'>Vol-target verdict: {verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            st.write({k: row.get(k) for k in [
+                "pct_windows_beat_btc", "pct_windows_beat_basket",
+                "pct_windows_beat_simple_momentum",
+                "pct_windows_beat_original_allocator",
+                "stability_score_pct",
+                "strategy_full_drawdown_pct", "btc_full_drawdown_pct",
+                "dd_gap_pp", "beats_placebo_median",
+                "checks_passed", "checks_total",
+                "reason"] if k in msv_sc.columns})
+
+
+# ---------------------------------------------------------------------------
 # Paper-trader state + risk dashboard
 # ---------------------------------------------------------------------------
 paper_state = paper_trader.get_state_for_display()

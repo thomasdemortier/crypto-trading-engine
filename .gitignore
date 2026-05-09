@@ -23,6 +23,8 @@ env/
 # Cached data and runtime artifacts
 data/raw/*.csv
 data/processed/*.csv
+data/market_structure/*.csv
+data/futures/**/*.csv
 logs/*.csv
 results/*.csv
 results/*.json
