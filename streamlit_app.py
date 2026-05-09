@@ -163,11 +163,26 @@ stop_loss_pct = st.sidebar.slider(
 ) / 100.0
 
 st.sidebar.subheader("Actions")
-col_a, col_b = st.sidebar.columns(2)
-do_refresh = col_a.button("Refresh data", help="Re-download candles from the exchange")
-do_backtest = col_b.button("Run backtest", type="primary")
-st.sidebar.markdown("---")
-do_paper_tick = st.sidebar.button("Paper tick", help="Run one paper-trade evaluation")
+do_backtest = st.sidebar.button(
+    "Run backtest", type="primary", use_container_width=True,
+    help="Run the backtester for the selected assets and timeframe.",
+)
+do_refresh = st.sidebar.button(
+    "Refresh data", use_container_width=True,
+    help="Re-download candles from the exchange.",
+)
+do_paper_tick = st.sidebar.button(
+    "Run paper tick", use_container_width=True,
+    help="Run one paper-trade evaluation on the latest candle.",
+)
+do_clear = st.sidebar.button(
+    "Clear saved results", use_container_width=True,
+    help=(
+        "Delete saved backtest artifacts (equity curve, trades, decisions, "
+        "metrics, scope metadata). Cached candles and paper-trader state "
+        "are NOT touched."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Run actions
@@ -252,6 +267,32 @@ if do_paper_tick:
         except Exception as e:
             st.error(f"Paper tick failed: {e}")
 
+if do_clear:
+    targets: List[Path] = [
+        config.RESULTS_DIR / "equity_curve.csv",
+        config.RESULTS_DIR / "summary_metrics.csv",
+        config.RESULTS_DIR / "per_asset_metrics.csv",
+        config.RESULTS_DIR / "backtest_meta.json",
+        config.LOGS_DIR / "trades.csv",
+        config.LOGS_DIR / "decisions.csv",
+    ]
+    targets += list(config.RESULTS_DIR.glob("price_*.csv"))
+    removed = 0
+    for p in targets:
+        try:
+            if p.exists():
+                p.unlink()
+                removed += 1
+        except Exception as e:  # noqa: BLE001
+            st.warning(f"Could not delete {p.name}: {e}")
+    # Drop the freshness sentinel and the cached candle reads.
+    st.session_state.pop("fresh_run_iso", None)
+    try:
+        _load_candles_cached.clear()
+    except Exception:
+        pass
+    st.success(f"Cleared {removed} saved result file(s). Cached candles kept.")
+
 
 # ---------------------------------------------------------------------------
 # Load latest artifacts
@@ -287,23 +328,47 @@ else:
     run_iso = meta.get("run_timestamp_iso")
     is_fresh = bool(fresh_iso) and fresh_iso == run_iso
     freshness_label = (
-        "Fresh — generated in this session"
-        if is_fresh else "Loaded from saved files"
+        "Fresh (this session)" if is_fresh else "Loaded from saved files"
     )
-    freshness_color = "#2e7d32" if is_fresh else "#795548"
+    freshness_badge_color = "#1b5e20" if is_fresh else "#6d4c41"
 
-    scope_rows = [
+    # Render scope as a 4-column grid of metric cards so the values are large
+    # and unmissable. Each cell uses the .metric-card style defined above.
+    def _scope_card(label: str, value: str) -> str:
+        return (
+            f"<div class='metric-card'>"
+            f"<div style='font-size:0.78rem;color:#666;"
+            f"text-transform:uppercase;letter-spacing:0.04em;'>{label}</div>"
+            f"<div style='font-size:1.05rem;font-weight:600;"
+            f"margin-top:0.15rem;word-break:break-word;'>{value}</div>"
+            f"</div>"
+        )
+
+    scope_items = [
         ("Selected assets", ", ".join(meta_assets) if meta_assets else "—"),
         ("Timeframe", meta_timeframe),
         ("Starting capital", f"{float(meta.get('starting_capital', 0.0)):,.2f} USDT"),
+        ("Candles used", str(int(meta.get("num_candles_used") or 0))),
         ("First candle (UTC)", str(meta.get("first_candle_iso") or "—")),
         ("Last candle (UTC)", str(meta.get("last_candle_iso") or "—")),
-        ("Candles used (post-alignment)", str(int(meta.get("num_candles_used") or 0))),
         ("Last backtest run (UTC)", str(run_iso or "—")),
         ("Result source", freshness_label),
     ]
-    scope_df = pd.DataFrame(scope_rows, columns=["Field", "Value"])
-    st.dataframe(scope_df, use_container_width=True, hide_index=True)
+    # Two rows of 4 columns each so all 8 fields are visible without scrolling.
+    for chunk_start in (0, 4):
+        cols = st.columns(4)
+        for i, (label, value) in enumerate(scope_items[chunk_start:chunk_start + 4]):
+            with cols[i]:
+                st.markdown(_scope_card(label, value), unsafe_allow_html=True)
+
+    # Explicit freshness badge so the status is obvious at a glance.
+    st.markdown(
+        f"<div style='margin-top:0.6rem;'>"
+        f"<span style='background:{freshness_badge_color};color:white;"
+        f"padding:0.2rem 0.6rem;border-radius:999px;font-size:0.85rem;'>"
+        f"Status: {freshness_label}</span></div>",
+        unsafe_allow_html=True,
+    )
 
     # Show a clear banner if the sidebar selection differs from the loaded run.
     sidebar_set = set(asset_choice or [])
@@ -456,42 +521,53 @@ else:
 # Section 3 — CSV downloads
 # ---------------------------------------------------------------------------
 st.subheader("Downloads")
-dl_cols = st.columns(5)
-if not metrics_df.empty:
-    dl_cols[0].download_button(
-        "Metrics CSV", _df_to_csv_bytes(metrics_df),
-        "summary_metrics.csv", "text/csv",
-    )
-else:
-    dl_cols[0].caption("Metrics CSV — run a backtest to enable.")
-if not trades_df.empty:
-    dl_cols[1].download_button(
-        "Trades CSV", _df_to_csv_bytes(trades_df),
-        "trades.csv", "text/csv",
-    )
-else:
-    dl_cols[1].caption("Trades CSV — no trades to export.")
-if not decisions_df.empty:
-    dl_cols[2].download_button(
-        "Decisions CSV", _df_to_csv_bytes(decisions_df),
-        "decisions.csv", "text/csv",
-    )
-else:
-    dl_cols[2].caption("Decisions CSV — no decisions to export.")
-if not equity_df.empty:
-    dl_cols[3].download_button(
-        "Equity curve CSV", _df_to_csv_bytes(equity_df),
-        "equity_curve.csv", "text/csv",
-    )
-else:
-    dl_cols[3].caption("Equity curve CSV — run a backtest to enable.")
-if not per_asset_df.empty:
-    dl_cols[4].download_button(
-        "Asset comparison CSV", _df_to_csv_bytes(per_asset_df),
-        "per_asset_metrics.csv", "text/csv",
-    )
-else:
-    dl_cols[4].caption("Asset comparison CSV — run a multi-asset backtest.")
+st.caption("Export the most recent saved artifacts as CSV.")
+
+download_specs = [
+    ("Metrics", "summary_metrics.csv", metrics_df,
+     "Combined-portfolio summary metrics.",
+     "Run a backtest to enable.", "dl_metrics"),
+    ("Trades", "trades.csv", trades_df,
+     "Per-trade execution log (BUY/SELL fills).",
+     "No trades to export — none generated under current settings.",
+     "dl_trades"),
+    ("Decisions", "decisions.csv", decisions_df,
+     "Every BUY / SELL / HOLD / SKIP / REJECT decision with reason.",
+     "No decisions to export — run a backtest first.",
+     "dl_decisions"),
+    ("Equity curve", "equity_curve.csv", equity_df,
+     "Per-bar portfolio equity, cash, and exposure.",
+     "Run a backtest to enable.", "dl_equity"),
+    ("Asset comparison", "per_asset_metrics.csv", per_asset_df,
+     "Per-asset breakdown (P&L, win rate, B&H, fees, …).",
+     "Run a multi-asset backtest to enable.", "dl_compare"),
+]
+
+# Render two per row so labels and buttons stay legible at typical widths.
+for chunk_start in range(0, len(download_specs), 2):
+    cols = st.columns(2)
+    for i, spec in enumerate(download_specs[chunk_start:chunk_start + 2]):
+        label, fname, df, desc, missing_msg, key = spec
+        with cols[i]:
+            st.markdown(f"**{label}** — `{fname}`")
+            st.caption(desc)
+            if df is not None and not df.empty:
+                st.download_button(
+                    label=f"Download {label.lower()} CSV",
+                    data=_df_to_csv_bytes(df),
+                    file_name=fname,
+                    mime="text/csv",
+                    key=key,
+                    use_container_width=True,
+                )
+            else:
+                st.button(
+                    f"Download {label.lower()} CSV (unavailable)",
+                    disabled=True,
+                    key=key + "_disabled",
+                    use_container_width=True,
+                )
+                st.caption(f":grey[{missing_msg}]")
 
 
 # ---------------------------------------------------------------------------
