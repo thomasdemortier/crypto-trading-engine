@@ -39,12 +39,15 @@ from pathlib import Path
 import pandas as pd
 
 from src import (
-    backtester, config, crypto_regime_signals, data_collector,
+    alert_engine, alert_history, backtester, bot_status, bot_status_history,
+    config, crypto_regime_signals, data_collector, decision_journal,
+    dry_run_planner,
     market_structure_data_audit, market_structure_data_collector,
     market_structure_research, market_structure_signals,
     oos_audit, paper_trader, performance, portfolio_audit,
-    portfolio_research, research, sentiment_data_audit,
-    sentiment_data_collector, sentiment_research, sentiment_signals, utils,
+    portfolio_research, research, safety_lock, sentiment_data_audit,
+    sentiment_data_collector, sentiment_research, sentiment_signals,
+    strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -893,6 +896,153 @@ def cmd_audit_sentiment_data(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Bot Control Center — read-only CLI commands
+# ---------------------------------------------------------------------------
+def cmd_bot_status(args: argparse.Namespace) -> int:
+    """Print + persist the current bot status. Read-only."""
+    df = bot_status.write_status(save=True)
+    row = df.iloc[0].to_dict()
+    print("\n=== bot status ===")
+    for k in bot_status.STATUS_COLUMNS:
+        if k in row:
+            print(f"  {k:<32} {row[k]}")
+    print("\nSaved → results/bot_status.csv (+ .json)")
+    return 0
+
+
+def cmd_strategy_registry(args: argparse.Namespace) -> int:
+    df = strategy_registry.write_snapshot(save=True)
+    if df.empty:
+        print("strategy_registry: no rows.")
+        return 1
+    cols = [c for c in ["strategy_family", "branch", "verdict",
+                          "scorecard_status", "paper_trading_allowed",
+                          "live_trading_allowed", "report_path"]
+            if c in df.columns]
+    print("\n=== strategy registry ===")
+    print(df[cols].to_string(index=False))
+    print("\nSaved → results/strategy_registry_snapshot.csv (+ .json)")
+    return 0
+
+
+def cmd_bot_alerts(args: argparse.Namespace) -> int:
+    df = alert_engine.write_alerts(save=True)
+    if df.empty:
+        print("bot_alerts: no rows.")
+        return 1
+    print("\n=== bot alerts ===")
+    crit = df[df["severity"] == "critical"]
+    warn = df[df["severity"] == "warning"]
+    info = df[df["severity"] == "info"]
+    cols = ["severity", "category", "message", "recommended_action"]
+    if not crit.empty:
+        print("\n[CRITICAL]")
+        print(crit[cols].to_string(index=False))
+    if not warn.empty:
+        print("\n[WARNING]")
+        print(warn[cols].to_string(index=False))
+    if not info.empty:
+        print(f"\n[INFO] {len(info)} item(s) — see CSV for detail.")
+    print("\nSaved → results/bot_alerts.csv")
+    return 0
+
+
+def cmd_dry_run_plan(args: argparse.Namespace) -> int:
+    df = dry_run_planner.write_plan(save=True,
+                                       starting_capital=args.starting_capital)
+    if df.empty:
+        print("dry_run_plan: no rows.")
+        return 1
+    print("\n=== dry-run trade plan (READ-ONLY, NO EXECUTION) ===")
+    cols = [c for c in ["strategy_name", "asset", "target_weight",
+                          "theoretical_action", "theoretical_notional",
+                          "mode", "execution_status"]
+            if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print("\nSaved → results/dry_run_trade_plan.csv")
+    return 0
+
+
+def cmd_bot_status_history(args: argparse.Namespace) -> int:
+    df = bot_status_history.record_status(save=True)
+    print(f"\n=== bot status history ({len(df)} row(s)) ===")
+    cols = [c for c in ["timestamp", "bot_mode", "execution_enabled",
+                          "active_strategy", "safety_lock_status",
+                          "stale_data_warning"]
+            if c in df.columns]
+    print(df[cols].tail(10).to_string(index=False))
+    print(f"\nSaved → results/{bot_status_history.OUTPUT_FILENAME}")
+    return 0
+
+
+def cmd_alert_history(args: argparse.Namespace) -> int:
+    df = alert_history.record_alerts(save=True)
+    if df.empty:
+        print("alert_history: no rows.")
+        return 0
+    active = df[df["active"].astype(bool)]
+    resolved = df[~df["active"].astype(bool)]
+    print(f"\n=== alert history ({len(active)} active, "
+          f"{len(resolved)} resolved) ===")
+    cols = ["severity", "category", "message", "occurrence_count",
+             "first_seen", "last_seen"]
+    if not active.empty:
+        print("\n[ACTIVE]")
+        print(active[cols].to_string(index=False))
+    if not resolved.empty:
+        print(f"\n[RESOLVED] {len(resolved)} item(s) — see CSV for detail.")
+    print(f"\nSaved → results/{alert_history.OUTPUT_FILENAME}")
+    return 0
+
+
+def cmd_decision_journal(args: argparse.Namespace) -> int:
+    df = decision_journal.record_decision(save=True)
+    print(f"\n=== decision journal ({len(df)} row(s)) ===")
+    last = df.iloc[-1].to_dict()
+    for k in decision_journal.JOURNAL_COLUMNS:
+        if k in last:
+            print(f"  {k:<30} {last[k]}")
+    print(f"\nSaved → results/{decision_journal.OUTPUT_FILENAME}")
+    return 0
+
+
+def cmd_system_health(args: argparse.Namespace) -> int:
+    df = system_health.write_health(save=True)
+    if df.empty:
+        print("system_health: no rows.")
+        return 1
+    fails = df[df["status"] == system_health.STATUS_FAIL]
+    warns = df[df["status"] == system_health.STATUS_WARN]
+    passes = df[df["status"] == system_health.STATUS_PASS]
+    print("\n=== system health ===")
+    cols = ["check_name", "status", "severity", "message",
+             "recommended_action"]
+    if not fails.empty:
+        print("\n[FAIL]")
+        print(fails[cols].to_string(index=False))
+    if not warns.empty:
+        print("\n[WARNING]")
+        print(warns[cols].to_string(index=False))
+    if not passes.empty:
+        print(f"\n[PASS] {len(passes)} check(s) passed.")
+    print(f"\nSaved → results/{system_health.OUTPUT_CSV} (+ .json)")
+    return 0
+
+
+def cmd_safety_status(args: argparse.Namespace) -> int:
+    s = safety_lock.status()
+    print("\n=== safety lock status ===")
+    print(f"  execution_allowed:           {s.execution_allowed}")
+    print(f"  paper_trading_allowed:       {s.paper_trading_allowed}")
+    print(f"  kraken_connection_allowed:   {s.kraken_connection_allowed}")
+    print(f"  safety_lock_status:          {s.safety_lock_status}")
+    print(f"  reasons_blocked:")
+    for r in s.reasons_blocked:
+        print(f"    - {r}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="crypto_trading_engine",
                                 description="Research-only BTC/ETH backtester.")
@@ -1182,6 +1332,74 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_sentiment)
+
+    # ----- Bot Control Center (read-only, no execution) -------------------
+    sp = sub.add_parser(
+        "bot_status",
+        help=("Print + persist the current bot status. Read-only. No "
+              "execution, no Kraken, no API keys."),
+    )
+    sp.set_defaults(func=cmd_bot_status)
+
+    sp = sub.add_parser(
+        "strategy_registry",
+        help=("Snapshot the strategy registry (every researched family + "
+              "verdict + trading-allowed gates). Read-only."),
+    )
+    sp.set_defaults(func=cmd_strategy_registry)
+
+    sp = sub.add_parser(
+        "bot_alerts",
+        help=("Generate human-readable alerts from current research "
+              "state. Read-only — never recommends trading."),
+    )
+    sp.set_defaults(func=cmd_bot_alerts)
+
+    sp = sub.add_parser(
+        "dry_run_plan",
+        help=("Build a theoretical dry-run trade plan from saved "
+              "target weights. NEVER places orders."),
+    )
+    sp.add_argument("--starting-capital", type=float, default=10_000.0,
+                    dest="starting_capital",
+                    help="Notional reference for the theoretical "
+                         "position sizes (no real money is moved).")
+    sp.set_defaults(func=cmd_dry_run_plan)
+
+    sp = sub.add_parser(
+        "safety_status",
+        help="Print the current safety-lock status. Read-only.",
+    )
+    sp.set_defaults(func=cmd_safety_status)
+
+    sp = sub.add_parser(
+        "bot_status_history",
+        help=("Append a bot-status snapshot to the history CSV. "
+              "Read-only."),
+    )
+    sp.set_defaults(func=cmd_bot_status_history)
+
+    sp = sub.add_parser(
+        "alert_history",
+        help=("Merge current alerts into the deduplicated alert "
+              "history CSV. Read-only."),
+    )
+    sp.set_defaults(func=cmd_alert_history)
+
+    sp = sub.add_parser(
+        "decision_journal",
+        help=("Append a decision row (RESEARCH_ONLY / DRY_RUN_ONLY / "
+              "EXECUTION_BLOCKED / NO_VALID_STRATEGY / DATA_STALE). "
+              "Never executes."),
+    )
+    sp.set_defaults(func=cmd_decision_journal)
+
+    sp = sub.add_parser(
+        "system_health",
+        help=("Run operational sanity checks (Python version, folders, "
+              "no broker keys, safety lock locked). Read-only."),
+    )
+    sp.set_defaults(func=cmd_system_health)
 
     sp = sub.add_parser("audit_oos",
                         help="Audit walk-forward window mechanics.")

@@ -902,6 +902,308 @@ if _flash:
 
 
 # ---------------------------------------------------------------------------
+# Bot Control Center — execution status, safety lock, registry, alerts
+# ---------------------------------------------------------------------------
+from src import (alert_engine as _alert_engine,
+                  bot_status as _bot_status,
+                  dry_run_planner as _dry_run_planner,
+                  safety_lock as _safety_lock,
+                  strategy_registry as _strategy_registry)
+
+with st.container(border=True):
+    _bs = _bot_status.compute_status()
+    # Big trading-disabled banner — red, hard to miss.
+    _banner_color = "#f43f5e" if not _bs.execution_enabled else "#10b981"
+    _banner_label = (
+        "🚫 TRADING DISABLED — research-only mode"
+        if not _bs.execution_enabled
+        else "⚠️ EXECUTION UNLOCKED — review every gate before any trade"
+    )
+    st.markdown(
+        f"<div style='padding:14px 18px;border-radius:10px;"
+        f"background:{_banner_color}22;color:{_banner_color};"
+        f"font-weight:700;font-size:1.1rem'>{_banner_label}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Bot Control Center</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>Live execution is disabled. The bot is "
+        "in research-only mode and the safety lock is centralised in "
+        "<code>src/safety_lock.py</code>. No Kraken integration, no API "
+        "keys, no paper trading. The reason every gate is blocked is "
+        "shown below.</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Status grid (2 rows × 3 cols of metric cards).
+    _cols_a = st.columns(3)
+    _cols_a[0].metric("Bot mode", str(_bs.bot_mode))
+    _cols_a[1].metric("Safety lock", str(_bs.safety_lock_status))
+    _cols_a[2].metric("Active strategy",
+                       _bs.active_strategy or "(none)")
+
+    _cols_b = st.columns(3)
+    _cols_b[0].metric("Kraken connected",
+                       "yes" if _bs.kraken_connected else "no")
+    _cols_b[1].metric("API keys loaded",
+                       "yes" if _bs.api_keys_loaded else "no")
+    _cols_b[2].metric("Paper trading",
+                       "enabled" if _bs.paper_trading_enabled else "disabled")
+
+    if _bs.api_keys_loaded:
+        st.warning(
+            "Local broker API key environment variable is set. "
+            "It is **not** read by this engine, but the safety lock "
+            "still blocks all execution paths.",
+        )
+    if _bs.stale_data_warning:
+        st.warning(
+            f"Data freshness warning — latest cache update: "
+            f"{_bs.latest_data_update or 'no cache found'}",
+        )
+
+    st.caption(
+        f"**Reason execution is blocked:** {_bs.reason_execution_blocked}"
+    )
+    st.caption(
+        f"**Next allowed step:** {_bs.next_allowed_step}"
+    )
+
+    bcc_tabs = st.tabs([
+        "Strategy registry", "Alerts", "Dry-run plan", "Reports",
+        "Status history", "Alert history", "Decision journal",
+        "System health", "Unlock procedure",
+    ])
+
+    with bcc_tabs[0]:
+        try:
+            _reg = pd.DataFrame(_strategy_registry.build_registry())
+        except Exception as e:  # noqa: BLE001
+            st.error(f"strategy_registry build failed: {e}")
+            _reg = pd.DataFrame()
+        if _reg.empty:
+            st.info("No strategy registry rows.")
+        else:
+            cols = [c for c in ["strategy_family", "branch", "verdict",
+                                  "scorecard_status",
+                                  "paper_trading_allowed",
+                                  "live_trading_allowed",
+                                  "best_result_summary",
+                                  "report_path"]
+                     if c in _reg.columns]
+            st.dataframe(_reg[cols], use_container_width=True,
+                          hide_index=True)
+            n_pass = int((_reg["verdict"] == "PASS").sum()) \
+                       if "verdict" in _reg.columns else 0
+            if n_pass == 0:
+                st.error(
+                    "No strategy has reached PASS. Trading remains "
+                    "disabled.",
+                )
+
+    with bcc_tabs[1]:
+        try:
+            _alerts = pd.DataFrame(_alert_engine.build_alerts())
+        except Exception as e:  # noqa: BLE001
+            st.error(f"alert_engine build failed: {e}")
+            _alerts = pd.DataFrame()
+        if _alerts.empty:
+            st.info("No alerts.")
+        else:
+            cols = [c for c in ["timestamp", "severity", "category",
+                                  "message", "recommended_action"]
+                     if c in _alerts.columns]
+            crit = _alerts[_alerts["severity"] == "critical"]
+            warn = _alerts[_alerts["severity"] == "warning"]
+            info = _alerts[_alerts["severity"] == "info"]
+            if not crit.empty:
+                st.markdown("**Critical:**")
+                st.dataframe(crit[cols], use_container_width=True,
+                              hide_index=True)
+            if not warn.empty:
+                st.markdown("**Warning:**")
+                st.dataframe(warn[cols], use_container_width=True,
+                              hide_index=True)
+            if not info.empty:
+                with st.expander(f"Info ({len(info)})"):
+                    st.dataframe(info[cols], use_container_width=True,
+                                  hide_index=True)
+
+    with bcc_tabs[2]:
+        try:
+            _plan = _dry_run_planner.write_plan(save=False)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"dry_run_planner build failed: {e}")
+            _plan = pd.DataFrame()
+        if _plan.empty:
+            st.info("No dry-run plan available.")
+        else:
+            st.caption(
+                "**Dry-run only.** No orders are created; the engine "
+                "never connects to a broker.",
+            )
+            cols = [c for c in ["timestamp", "strategy_name", "asset",
+                                  "current_weight", "target_weight",
+                                  "theoretical_action",
+                                  "theoretical_notional",
+                                  "mode", "execution_status", "reason"]
+                     if c in _plan.columns]
+            st.dataframe(_plan[cols], use_container_width=True,
+                          hide_index=True)
+
+    with bcc_tabs[3]:
+        if _bs.latest_research_report:
+            st.markdown(f"**Latest research report:** "
+                         f"`{_bs.latest_research_report}`")
+        _reports = sorted((config.REPO_ROOT / "reports").glob("*.md")) \
+                     if (config.REPO_ROOT / "reports").exists() else []
+        if not _reports:
+            st.info("No research reports under `reports/`.")
+        else:
+            for r in _reports:
+                rel = r.relative_to(config.REPO_ROOT)
+                st.markdown(f"- `{rel}`")
+
+    # --- Status history --------------------------------------------------
+    from src import (alert_history as _alert_history,
+                      bot_status_history as _bot_status_history,
+                      decision_journal as _decision_journal,
+                      system_health as _system_health)
+
+    with bcc_tabs[4]:
+        _hist_path = (config.RESULTS_DIR
+                       / _bot_status_history.OUTPUT_FILENAME)
+        if _hist_path.exists() and _hist_path.stat().st_size > 0:
+            try:
+                _hist = pd.read_csv(_hist_path)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"history unreadable: {e}")
+                _hist = pd.DataFrame()
+        else:
+            _hist = pd.DataFrame()
+        if _hist.empty:
+            st.info("No status history yet. Run "
+                     "`python main.py bot_status_history`.")
+        else:
+            cols = [c for c in ["timestamp", "bot_mode",
+                                  "execution_enabled", "active_strategy",
+                                  "safety_lock_status",
+                                  "stale_data_warning",
+                                  "reason_execution_blocked"]
+                     if c in _hist.columns]
+            st.caption(f"{len(_hist)} snapshot(s) recorded.")
+            st.dataframe(_hist[cols].tail(50), use_container_width=True,
+                          hide_index=True)
+
+    # --- Alert history ---------------------------------------------------
+    with bcc_tabs[5]:
+        _ah_path = config.RESULTS_DIR / _alert_history.OUTPUT_FILENAME
+        if _ah_path.exists() and _ah_path.stat().st_size > 0:
+            try:
+                _ah = pd.read_csv(_ah_path)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"alert history unreadable: {e}")
+                _ah = pd.DataFrame()
+        else:
+            _ah = pd.DataFrame()
+        if _ah.empty:
+            st.info("No alert history yet. Run "
+                     "`python main.py alert_history`.")
+        else:
+            active = _ah[_ah["active"].astype(bool)]
+            resolved = _ah[~_ah["active"].astype(bool)]
+            st.caption(f"{len(active)} active, {len(resolved)} resolved.")
+            cols = ["severity", "category", "message",
+                     "occurrence_count", "first_seen", "last_seen"]
+            cols = [c for c in cols if c in _ah.columns]
+            if not active.empty:
+                st.markdown("**Active:**")
+                st.dataframe(active[cols], use_container_width=True,
+                              hide_index=True)
+            if not resolved.empty:
+                with st.expander(f"Resolved ({len(resolved)})"):
+                    st.dataframe(resolved[cols], use_container_width=True,
+                                  hide_index=True)
+
+    # --- Decision journal -------------------------------------------------
+    with bcc_tabs[6]:
+        _dj_path = (config.RESULTS_DIR
+                     / _decision_journal.OUTPUT_FILENAME)
+        if _dj_path.exists() and _dj_path.stat().st_size > 0:
+            try:
+                _dj = pd.read_csv(_dj_path)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"decision journal unreadable: {e}")
+                _dj = pd.DataFrame()
+        else:
+            _dj = pd.DataFrame()
+        if _dj.empty:
+            st.info("No decision journal yet. Run "
+                     "`python main.py decision_journal`.")
+        else:
+            st.caption(
+                "**Execution status is always BLOCKED on this branch.** "
+                "The journal records what the bot would theoretically "
+                "do; orders are never placed.",
+            )
+            cols = [c for c in ["timestamp", "bot_mode",
+                                  "decision", "reason",
+                                  "active_strategy",
+                                  "execution_status",
+                                  "safety_lock_status",
+                                  "theoretical_action_summary"]
+                     if c in _dj.columns]
+            st.dataframe(_dj[cols].tail(20), use_container_width=True,
+                          hide_index=True)
+
+    # --- System health ---------------------------------------------------
+    with bcc_tabs[7]:
+        try:
+            _sh = pd.DataFrame(_system_health.run_health_checks())
+        except Exception as e:  # noqa: BLE001
+            st.error(f"system_health failed: {e}")
+            _sh = pd.DataFrame()
+        if _sh.empty:
+            st.info("No system health data.")
+        else:
+            n_fail = int((_sh["status"]
+                            == _system_health.STATUS_FAIL).sum())
+            n_warn = int((_sh["status"]
+                            == _system_health.STATUS_WARN).sum())
+            n_pass = int((_sh["status"]
+                            == _system_health.STATUS_PASS).sum())
+            cols_h = st.columns(3)
+            cols_h[0].metric("PASS", n_pass)
+            cols_h[1].metric("WARNING", n_warn)
+            cols_h[2].metric("FAIL", n_fail)
+            cols = [c for c in ["check_name", "status", "severity",
+                                  "message", "recommended_action"]
+                     if c in _sh.columns]
+            st.dataframe(_sh[cols], use_container_width=True,
+                          hide_index=True)
+
+    # --- Unlock procedure -------------------------------------------------
+    with bcc_tabs[8]:
+        _doc_path = config.REPO_ROOT / "docs" / "unlock_procedure.md"
+        st.caption(
+            "**No config flag, environment variable, secrets entry, "
+            "CLI argument, or hidden override can unlock trading.** "
+            "All ten gates are required, plus an explicit code change.",
+        )
+        if _doc_path.exists():
+            try:
+                st.markdown(_doc_path.read_text())
+            except Exception as e:  # noqa: BLE001
+                st.error(f"docs/unlock_procedure.md unreadable: {e}")
+        else:
+            st.info("docs/unlock_procedure.md is missing.")
+
+
+# ---------------------------------------------------------------------------
 # Stale-state banner — compare current sidebar controls against the saved
 # backtest metadata. If anything differs, show ONE prominent warning so the
 # user can never silently look at stale numbers without noticing.
