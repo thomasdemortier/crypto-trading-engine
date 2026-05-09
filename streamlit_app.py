@@ -902,6 +902,60 @@ if _flash:
 
 
 # ---------------------------------------------------------------------------
+# Stale-state banner — compare current sidebar controls against the saved
+# backtest metadata. If anything differs, show ONE prominent warning so the
+# user can never silently look at stale numbers without noticing.
+# ---------------------------------------------------------------------------
+def _stale_state_mismatches() -> List[str]:
+    if meta is None:
+        return []
+    rows: List[str] = []
+
+    sidebar_assets = sorted(set(asset_choice or []))
+    saved_assets = sorted(set(meta_assets))
+    if sidebar_assets and sidebar_assets != saved_assets:
+        rows.append(
+            f"**Assets** — selected `{sidebar_assets}` vs displayed "
+            f"`{saved_assets}`"
+        )
+
+    saved_tf = str(meta.get("timeframe") or "")
+    if saved_tf and timeframe != saved_tf:
+        rows.append(
+            f"**Timeframe** — selected `{timeframe}` vs displayed `{saved_tf}`"
+        )
+
+    try:
+        saved_capital = float(meta.get("starting_capital") or 0.0)
+        if saved_capital and abs(float(starting_capital) - saved_capital) > 1e-6:
+            rows.append(
+                f"**Starting capital** — selected "
+                f"`{float(starting_capital):,.2f} USDT` vs displayed "
+                f"`{saved_capital:,.2f} USDT`"
+            )
+    except (TypeError, ValueError):
+        pass
+
+    saved_strategy = str(meta.get("strategy_name") or "")
+    if saved_strategy and strategy_key and strategy_key != saved_strategy:
+        rows.append(
+            f"**Strategy** — selected `{strategy_key}` vs displayed "
+            f"`{saved_strategy}`"
+        )
+    return rows
+
+
+_mismatches = _stale_state_mismatches()
+if _mismatches:
+    st.warning(
+        "**Current controls do not match the displayed result. "
+        "Click Run backtest to update.**\n\n"
+        + "\n".join(f"- {row}" for row in _mismatches),
+        icon="⚠️",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
 last_run_label = _short_iso(last_run_iso) if last_run_iso else "no run yet"
@@ -1078,14 +1132,8 @@ with st.container(border=True):
         st.markdown(f"<div class='scope-grid'>{cells}</div>",
                     unsafe_allow_html=True)
 
-    sidebar_set = set(asset_choice or [])
-    meta_set = set(meta_assets)
-    if meta and sidebar_set and sidebar_set != meta_set:
-        st.warning(
-            f"Sidebar selection ({sorted(sidebar_set)}) differs from the "
-            f"saved scope ({sorted(meta_set)}). Click **Run backtest** to "
-            f"regenerate."
-        )
+    # The scope mismatch banner is rendered higher up in the page (above the
+    # hero metrics) so the user spots stale state before reading the numbers.
 
 
 # ---------------------------------------------------------------------------
