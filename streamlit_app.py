@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -456,6 +456,63 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+# ---------- Simple ↔ Advanced mode toggle ---------------------------------
+# Simple mode hides every technical slider behind a small set of presets so
+# a non-technical user can run a research test in 3 clicks. Advanced mode
+# preserves every existing control with no regression.
+DASHBOARD_MODE = st.sidebar.radio(
+    "Dashboard mode",
+    options=["Simple", "Advanced"],
+    horizontal=True,
+    help=("Simple hides technical sliders behind presets. Advanced shows "
+          "every parameter exactly as before — useful for tuning."),
+)
+SIMPLE_MODE = (DASHBOARD_MODE == "Simple")
+
+# ---------- Risk presets (Simple Mode) ------------------------------------
+# Each preset maps to a dict of risk-engine parameter values. They MUST be
+# named "research" so the user does not read this as a trading recommendation.
+RISK_PRESETS: Dict[str, Dict[str, float]] = {
+    "Conservative research": {
+        "max_position_pct": 0.05, "risk_per_trade_pct": 0.005,
+        "max_daily_loss_pct": 0.01, "stop_loss_pct": 0.05,
+    },
+    "Balanced research": {
+        "max_position_pct": 0.10, "risk_per_trade_pct": 0.01,
+        "max_daily_loss_pct": 0.02, "stop_loss_pct": 0.05,
+    },
+    "Aggressive research": {
+        "max_position_pct": 0.20, "risk_per_trade_pct": 0.02,
+        "max_daily_loss_pct": 0.04, "stop_loss_pct": 0.08,
+    },
+}
+RISK_PRESET_NOTES: Dict[str, str] = {
+    "Conservative research": (
+        "Smallest positions, tightest daily loss cap. Hardest to make "
+        "money — easiest to survive a bad period."
+    ),
+    "Balanced research": (
+        "The repo defaults. Reasonable middle ground for testing."
+    ),
+    "Aggressive research": (
+        "Bigger positions and wider stops. Bigger gains AND bigger losses. "
+        "Use only to stress-test, not as a recommendation."
+    ),
+}
+
+STRATEGY_OPTIONS: List[Tuple[str, str, str]] = [
+    ("rsi_ma_atr", "Current RSI trend strategy",
+     "Looks for pullbacks during an uptrend. It buys only when price is "
+     "above the long-term average and RSI shows weakness."),
+    ("ma_cross", "Moving average trend strategy",
+     "Buys when short-term trend moves above long-term trend."),
+    ("breakout", "Breakout strategy",
+     "Buys when price breaks above a recent high."),
+    ("buy_and_hold", "Buy and hold baseline",
+     "Buys and holds as a benchmark. Used to compare whether trading "
+     "adds value."),
+]
+
 st.sidebar.markdown(
     "<div style='font-size:1.05rem;font-weight:700;color:#e5e7eb;"
     "padding:0.2rem 0 0.6rem 0;'>Controls</div>",
@@ -464,54 +521,146 @@ st.sidebar.markdown(
 
 with st.sidebar.expander("Assets & timeframe", expanded=True):
     asset_choice = st.multiselect(
-        "Assets", options=config.ASSETS, default=config.ASSETS,
+        "Assets",
+        options=config.ASSETS, default=config.ASSETS,
+        help=("Which crypto assets to test. Both BTC/USDT and ETH/USDT "
+              "are selected by default."),
     )
     timeframe = st.selectbox(
-        "Timeframe", options=config.TIMEFRAMES,
+        "Timeframe",
+        options=config.TIMEFRAMES,
         index=config.TIMEFRAMES.index(config.DEFAULT_TIMEFRAME),
+        help=("How long each candle covers. 1h = hourly bars, "
+              "4h = 4-hour bars, 1d = daily bars. Shorter timeframes "
+              "produce more trades but more noise."),
     )
 
-with st.sidebar.expander("Strategy parameters", expanded=False):
-    rsi_buy = st.slider(
-        "RSI buy threshold", 5, 50, int(config.STRATEGY.rsi_buy_threshold),
-    )
-    rsi_sell = st.slider(
-        "RSI sell threshold", 50, 95, int(config.STRATEGY.rsi_sell_threshold),
-    )
-    atr_pct_max = st.slider(
-        "ATR % max (skip new entries above)", 1.0, 15.0,
-        float(config.STRATEGY.atr_pct_max), 0.5,
-    )
+if SIMPLE_MODE:
+    # ---------- Simple Mode controls --------------------------------------
+    with st.sidebar.expander("Money & risk", expanded=True):
+        starting_capital = st.number_input(
+            "Starting capital (USDT)",
+            min_value=100.0, max_value=10_000_000.0,
+            value=10_000.0, step=100.0,
+            help=("How much simulated money the strategy starts with. "
+                  "Bigger numbers do not change strategy behaviour, only "
+                  "the dollar amounts in the result."),
+        )
+        risk_preset_label = st.selectbox(
+            "Risk preset",
+            options=list(RISK_PRESETS.keys()),
+            index=1,  # Balanced research
+            help=("How aggressively the strategy is allowed to size and "
+                  "stop trades. Three preset bundles — pick one. None of "
+                  "these are trading recommendations; they are research "
+                  "configurations."),
+        )
+        st.caption(RISK_PRESET_NOTES[risk_preset_label])
+        # Pull preset values into the same variable names the rest of the
+        # script already uses, so the action handlers don't need to care
+        # which mode is active.
+        _preset = RISK_PRESETS[risk_preset_label]
+        max_position_pct = _preset["max_position_pct"]
+        risk_per_trade_pct = _preset["risk_per_trade_pct"]
+        max_daily_loss_pct = _preset["max_daily_loss_pct"]
+        stop_loss_pct = _preset["stop_loss_pct"]
+        # Fees and slippage stay at the repo defaults in Simple Mode.
+        fee_pct = float(config.RISK.fee_pct)
+        slippage_pct = float(config.RISK.slippage_pct)
 
-with st.sidebar.expander("Risk parameters", expanded=False):
-    starting_capital = st.number_input(
-        "Starting capital (USDT)", min_value=100.0, max_value=10_000_000.0,
-        value=float(config.RISK.starting_capital), step=100.0,
+    with st.sidebar.expander("Strategy style", expanded=True):
+        strategy_label_to_key = {label: key for key, label, _ in STRATEGY_OPTIONS}
+        strategy_label = st.selectbox(
+            "Strategy",
+            options=[label for _, label, _ in STRATEGY_OPTIONS],
+            index=0,
+            help=("Which trading rule to use. The risk engine, fees, and "
+                  "slippage are identical for every strategy — only the "
+                  "buy/sell logic differs."),
+        )
+        strategy_key = strategy_label_to_key[strategy_label]
+        # Show the chosen strategy's plain-English description.
+        for _key, _label, _desc in STRATEGY_OPTIONS:
+            if _key == strategy_key:
+                st.caption(_desc)
+                break
+        # Strategy parameters in Simple Mode = repo defaults.
+        rsi_buy = int(config.STRATEGY.rsi_buy_threshold)
+        rsi_sell = int(config.STRATEGY.rsi_sell_threshold)
+        atr_pct_max = float(config.STRATEGY.atr_pct_max)
+
+    st.sidebar.info(
+        "Advanced parameters are hidden. Switch to Advanced Mode to edit "
+        "RSI, ATR, slippage, fees, and stop-loss settings.",
+        icon="ℹ️",
     )
-    max_position_pct = st.slider(
-        "Max position size (%)", 1.0, 25.0,
-        float(config.RISK.max_position_pct * 100), 0.5,
-    ) / 100.0
-    risk_per_trade_pct = st.slider(
-        "Risk per trade (%)", 0.1, 5.0,
-        float(config.RISK.risk_per_trade_pct * 100), 0.1,
-    ) / 100.0
-    max_daily_loss_pct = st.slider(
-        "Max daily loss (%)", 0.5, 10.0,
-        float(config.RISK.max_daily_loss_pct * 100), 0.1,
-    ) / 100.0
-    fee_pct = st.number_input(
-        "Fee (% per trade)", min_value=0.0, max_value=2.0,
-        value=float(config.RISK.fee_pct * 100), step=0.01, format="%.3f",
-    ) / 100.0
-    slippage_pct = st.number_input(
-        "Slippage (% per trade)", min_value=0.0, max_value=2.0,
-        value=float(config.RISK.slippage_pct * 100), step=0.01, format="%.3f",
-    ) / 100.0
-    stop_loss_pct = st.slider(
-        "Stop-loss distance (%)", 1.0, 25.0,
-        float(config.RISK.stop_loss_pct * 100), 0.5,
-    ) / 100.0
+else:
+    # ---------- Advanced Mode controls — every original control intact ----
+    with st.sidebar.expander("Strategy parameters", expanded=False):
+        rsi_buy = st.slider(
+            "RSI buy threshold", 5, 50, int(config.STRATEGY.rsi_buy_threshold),
+            help=("RSI is a momentum score from 0 to 100. Lower numbers "
+                  "mean the asset may be oversold. A buy threshold of 35 "
+                  "means the strategy looks for weakness before buying."),
+        )
+        rsi_sell = st.slider(
+            "RSI sell threshold", 50, 95, int(config.STRATEGY.rsi_sell_threshold),
+            help=("Higher RSI means price may be overheated. A sell "
+                  "threshold of 65 means the strategy exits when momentum "
+                  "looks stretched."),
+        )
+        atr_pct_max = st.slider(
+            "ATR % max (skip new entries above)", 1.0, 15.0,
+            float(config.STRATEGY.atr_pct_max), 0.5,
+            help=("ATR measures volatility. A high ATR means price is "
+                  "moving violently. This filter avoids opening trades "
+                  "when the market is too unstable."),
+        )
+
+    with st.sidebar.expander("Risk parameters", expanded=False):
+        starting_capital = st.number_input(
+            "Starting capital (USDT)",
+            min_value=100.0, max_value=10_000_000.0,
+            value=float(config.RISK.starting_capital), step=100.0,
+            help="How much simulated money the strategy starts with.",
+        )
+        max_position_pct = st.slider(
+            "Max position size (%)", 1.0, 25.0,
+            float(config.RISK.max_position_pct * 100), 0.5,
+            help="The biggest share of the portfolio that can go into one asset.",
+        ) / 100.0
+        risk_per_trade_pct = st.slider(
+            "Risk per trade (%)", 0.1, 5.0,
+            float(config.RISK.risk_per_trade_pct * 100), 0.1,
+            help="The maximum amount the strategy is allowed to lose on one trade.",
+        ) / 100.0
+        max_daily_loss_pct = st.slider(
+            "Max daily loss (%)", 0.5, 10.0,
+            float(config.RISK.max_daily_loss_pct * 100), 0.1,
+            help=("If simulated losses hit this level in one day, the "
+                  "system stops opening new trades."),
+        ) / 100.0
+        fee_pct = st.number_input(
+            "Fee (% per trade)", min_value=0.0, max_value=2.0,
+            value=float(config.RISK.fee_pct * 100), step=0.01, format="%.3f",
+            help="Estimated exchange trading cost per trade side.",
+        ) / 100.0
+        slippage_pct = st.number_input(
+            "Slippage (% per trade)", min_value=0.0, max_value=2.0,
+            value=float(config.RISK.slippage_pct * 100), step=0.01, format="%.3f",
+            help=("Estimated price difference between expected and actual "
+                  "execution price."),
+        ) / 100.0
+        stop_loss_pct = st.slider(
+            "Stop-loss distance (%)", 1.0, 25.0,
+            float(config.RISK.stop_loss_pct * 100), 0.5,
+            help=("How far price can move against the trade before the "
+                  "simulated position is closed."),
+        ) / 100.0
+
+    # In Advanced mode we keep the existing strategy (RSI/MA/ATR) — same as before.
+    strategy_key = "rsi_ma_atr"
+    strategy_label = "Current RSI trend strategy"
 
 with st.sidebar.expander("Actions", expanded=True):
     do_backtest = st.button(
@@ -629,9 +778,18 @@ if do_backtest:
                 data_collector.download_all(
                     assets=asset_choice, timeframes=[timeframe], refresh=False,
                 )
+                # Resolve the chosen strategy (Simple Mode lets the user
+                # pick; Advanced Mode keeps the incumbent RSI/MA/ATR for
+                # back-compat). The risk engine, fees, slippage, and fill
+                # model are identical across strategies — see src/strategies.
+                from src.strategies import REGISTRY as _STRATEGY_REGISTRY
+                _strategy_cls = _STRATEGY_REGISTRY.get(
+                    strategy_key, _STRATEGY_REGISTRY["rsi_ma_atr"]
+                )
                 art = backtester.run_backtest(
                     assets=asset_choice, timeframe=timeframe,
                     risk_cfg=risk_cfg, strat_cfg=strat_cfg, save=True,
+                    strategy=_strategy_cls(),
                 )
                 metrics = performance.compute_metrics(
                     art.equity_curve, art.trades, art.asset_close_curves,
@@ -796,6 +954,37 @@ st.markdown(
 
 
 # ---------------------------------------------------------------------------
+# "What am I looking at?" — plain-English orientation for new visitors.
+# Collapsible so it doesn't clutter the dashboard for repeat users.
+# ---------------------------------------------------------------------------
+with st.expander("What am I looking at?", expanded=False):
+    st.markdown(
+        """
+        - **This is a research dashboard, not a money-making bot.** Nothing
+          here places real orders. Every result is a simulation against
+          historical candle data.
+        - **Every strategy is tested against buy-and-hold** (the price went
+          up by X%, the strategy returned Y%). The benchmark is what you
+          would have made by simply holding the same assets over the same
+          dates with no trading.
+        - **If "Strategy vs B&H" is negative, the strategy is worse than
+          simply holding** during this exact tested window. Trading cost
+          you more than it added.
+        - **A low max drawdown is not automatically good.** A strategy
+          that barely trades will look "safe" but also miss most of the
+          upside — that's not a real edge, just inactivity.
+        - **A strategy with too few closed trades is statistically weak.**
+          Five lucky trades prove nothing. The Research Lab flags any run
+          with under 10 round-trips as inconclusive.
+        - **The current incumbent strategy has been underperforming
+          buy-and-hold** in every tested window so far. The Research Lab
+          tab makes that explicit and unambiguous — see the FAIL/PASS
+          verdicts for the full picture.
+        """
+    )
+
+
+# ---------------------------------------------------------------------------
 # Hero metrics — Final portfolio / Strategy return / B&H / vs B&H
 # ---------------------------------------------------------------------------
 def _hero_card(label: str, value: str, context: str,
@@ -856,6 +1045,92 @@ else:
     ]
     st.markdown(f"<div class='hero-grid'>{''.join(cards)}</div>",
                 unsafe_allow_html=True)
+
+    # ---- Interpretation card --------------------------------------------
+    # Plain-English read of the result, generated from the same metrics shown
+    # above. Conservative: does not call anything "good" unless evidence
+    # supports it; explicitly flags low trade counts and low exposure.
+    def _interpret(m: dict) -> Tuple[str, List[str]]:
+        tot = float(m.get("total_return_pct", 0.0))
+        bh = float(m.get("buy_and_hold_return_pct", 0.0))
+        diff = float(m.get("strategy_vs_bh_pct", 0.0))
+        n_trades = int(m.get("num_trades", 0))
+        max_dd = float(m.get("max_drawdown_pct", 0.0))
+        exposure = float(m.get("exposure_time_pct", 0.0))
+
+        bits: List[str] = []
+        bits.append(
+            f"The strategy returned **{tot:+.2f}%**, while buy-and-hold "
+            f"returned **{bh:+.2f}%** over the same exact dates."
+        )
+        if diff < -1:
+            bits.append(
+                f"That is **{abs(diff):.2f}% worse than simply holding** — "
+                f"the trading rules cost you money relative to doing nothing."
+            )
+        elif diff > 1:
+            bits.append(
+                f"That is **{diff:.2f}% better than buy-and-hold** in this "
+                f"window. One window is not enough evidence — see the "
+                f"Research Lab for cross-period checks."
+            )
+        else:
+            bits.append("The strategy roughly matched the benchmark.")
+
+        if exposure < 10:
+            bits.append(
+                f"Exposure time was only **{exposure:.1f}%** — the strategy "
+                f"barely had money in the market. Low risk, but also no "
+                f"meaningful test of an edge."
+            )
+        elif exposure < 40:
+            bits.append(
+                f"Exposure time was **{exposure:.1f}%** — the strategy "
+                f"sat in cash for most of the period."
+            )
+
+        if n_trades < 10:
+            bits.append(
+                f"Only **{n_trades} closed round-trip(s)** — that is "
+                f"statistically too few to claim an edge either way. "
+                f"Treat the numbers above as anecdote, not evidence."
+            )
+
+        if abs(max_dd) < 1 and exposure < 30:
+            bits.append(
+                "The tiny drawdown is misleading — it reflects how little "
+                "the strategy traded, not how well it managed risk."
+            )
+
+        # Bottom-line verdict.
+        if diff < -1 or n_trades < 10:
+            verdict = (
+                "**Verdict: based on this single test the strategy is not "
+                "worth trading.** Run the Research Lab for a deeper picture."
+            )
+        elif diff > 1 and n_trades >= 10:
+            verdict = (
+                "**Verdict: encouraging in this one window, but not yet "
+                "conclusive.** Run the Research Lab to test against other "
+                "timeframes and out-of-sample windows."
+            )
+        else:
+            verdict = (
+                "**Verdict: inconclusive.** Run the Research Lab for "
+                "walk-forward and robustness checks."
+            )
+        return verdict, bits
+
+    with st.container(border=True):
+        st.markdown(
+            "<div class='section-h'><span class='dot'></span>"
+            "Interpretation (plain English)</div>",
+            unsafe_allow_html=True,
+        )
+        verdict_md, bits_md = _interpret(m)
+        for line in bits_md:
+            st.markdown(f"- {line}")
+        st.markdown(verdict_md)
 
 
 # ---------------------------------------------------------------------------
@@ -989,22 +1264,62 @@ if not metrics_df.empty:
             unsafe_allow_html=True,
         )
         c = st.columns(5)
-        c[0].metric("Final value",
-                    f"{_fmt_money(float(m['final_portfolio_value']), 0)} USDT",
-                    _fmt_pct(float(m['total_return_pct'])))
-        c[1].metric("Max drawdown", _fmt_pct(float(m['max_drawdown_pct'])))
-        c[2].metric("Win rate", f"{float(m['win_rate_pct']):.1f}%",
-                    f"{int(m['num_trades'])} round-trips")
-        c[3].metric("Profit factor", f"{float(m['profit_factor']):.2f}")
-        c[4].metric("Fees paid", f"{_fmt_money(float(m['fees_paid']))} USDT")
+        c[0].metric(
+            "Final value",
+            f"{_fmt_money(float(m['final_portfolio_value']), 0)} USDT",
+            _fmt_pct(float(m['total_return_pct'])),
+            help=("Where the simulated portfolio ended up. The delta below "
+                  "is the total percentage return over the tested window."),
+        )
+        c[1].metric(
+            "Max drawdown", _fmt_pct(float(m['max_drawdown_pct'])),
+            help=("The biggest peak-to-trough drop the portfolio suffered. "
+                  "A small drawdown can be misleading if the strategy "
+                  "barely traded."),
+        )
+        c[2].metric(
+            "Win rate", f"{float(m['win_rate_pct']):.1f}%",
+            f"{int(m['num_trades'])} round-trips",
+            help=("Share of closed trades that finished green. With fewer "
+                  "than 10 trades this number is statistically very weak."),
+        )
+        c[3].metric(
+            "Profit factor", f"{float(m['profit_factor']):.2f}",
+            help=("Total profit divided by total loss. Above 1 means "
+                  "profitable before context. Below 1 is bad."),
+        )
+        c[4].metric(
+            "Fees paid", f"{_fmt_money(float(m['fees_paid']))} USDT",
+            help="Sum of all simulated exchange fees over the test window.",
+        )
         c2 = st.columns(5)
-        c2[0].metric("Sharpe", f"{float(m['sharpe_ratio']):.2f}")
-        c2[1].metric("Sortino", f"{float(m['sortino_ratio']):.2f}")
-        c2[2].metric("Calmar", f"{float(m['calmar_ratio']):.2f}")
-        c2[3].metric("Slippage cost",
-                     f"{_fmt_money(float(m['slippage_cost']))} USDT")
-        c2[4].metric("Exposure time",
-                     f"{float(m.get('exposure_time_pct', 0.0)):.1f}%")
+        c2[0].metric(
+            "Sharpe", f"{float(m['sharpe_ratio']):.2f}",
+            help=("Return compared to volatility. Higher is better. "
+                  "Unreliable with too few trades."),
+        )
+        c2[1].metric(
+            "Sortino", f"{float(m['sortino_ratio']):.2f}",
+            help=("Like Sharpe, but focuses more on downside volatility "
+                  "(big losses count more than big gains)."),
+        )
+        c2[2].metric(
+            "Calmar", f"{float(m['calmar_ratio']):.2f}",
+            help="Return compared to max drawdown. Higher is better.",
+        )
+        c2[3].metric(
+            "Slippage cost",
+            f"{_fmt_money(float(m['slippage_cost']))} USDT",
+            help=("Sum of estimated price-impact costs across all "
+                  "simulated fills."),
+        )
+        c2[4].metric(
+            "Exposure time",
+            f"{float(m.get('exposure_time_pct', 0.0)):.1f}%",
+            help=("Percentage of time the strategy actually had money in "
+                  "the market. Low exposure means low risk AND no real "
+                  "test of an edge."),
+        )
 
         if float(m.get("strategy_vs_bh_pct", 0.0)) < 0:
             st.warning(
@@ -1270,8 +1585,49 @@ with st.container(border=True):
     rl_mc_df = _research_csv("monte_carlo_results.csv")
     rl_mcs_df = _research_csv("monte_carlo_simulations.csv")
 
+    # Plain-English explainers shown at the top of each Research Lab tab.
+    RL_TAB_EXPLAINERS: Dict[str, str] = {
+        "timeframe": (
+            "Checks whether the strategy works on 1h, 4h, and 1d candles. "
+            "A real edge should not only work on one timeframe."
+        ),
+        "walk_forward": (
+            "Tests the strategy on rolling future periods. This is closer "
+            "to real-world testing than one big backtest — performance "
+            "should hold up window after window."
+        ),
+        "strategy": (
+            "Compares different rule-based strategies using the same risk "
+            "engine, fees, and slippage. Differences are pure strategy, "
+            "not execution model."
+        ),
+        "robustness": (
+            "Changes parameters slightly to see whether performance "
+            "collapses. Fragile strategies that only work on one exact "
+            "parameter set are dangerous in the real world."
+        ),
+        "monte_carlo": (
+            "Shuffles historical trade results to estimate how unstable "
+            "the outcome could be. If a different ordering of the same "
+            "trades produces a wide distribution, the headline number was "
+            "lucky."
+        ),
+        "summary": (
+            "Plain-English verdict across all tests. PASS / FAIL / "
+            "INCONCLUSIVE labels are conservative on purpose — borderline "
+            "results are not declared good."
+        ),
+    }
+
+    def _explainer(key: str) -> None:
+        st.markdown(
+            f"<div class='section-sub'>{RL_TAB_EXPLAINERS[key]}</div>",
+            unsafe_allow_html=True,
+        )
+
     # ---- Timeframe comparison -----------------------------------------
     with rl_tabs[0]:
+        _explainer("timeframe")
         if rl_tf_df.empty:
             st.info("No timeframe-comparison results yet. Run **Run research "
                     "lab** in the sidebar.")
@@ -1312,6 +1668,7 @@ with st.container(border=True):
 
     # ---- Walk-forward --------------------------------------------------
     with rl_tabs[1]:
+        _explainer("walk_forward")
         if rl_wf_df.empty:
             st.info("No walk-forward results yet. Run **Run research lab**.")
         else:
@@ -1360,6 +1717,7 @@ with st.container(border=True):
 
     # ---- Strategy comparison -------------------------------------------
     with rl_tabs[2]:
+        _explainer("strategy")
         if rl_sc_df.empty:
             st.info("No strategy-comparison results yet.")
         else:
@@ -1427,6 +1785,7 @@ with st.container(border=True):
 
     # ---- Robustness ----------------------------------------------------
     with rl_tabs[3]:
+        _explainer("robustness")
         if rl_rb_df.empty:
             st.info("No robustness results yet.")
         else:
@@ -1481,6 +1840,7 @@ with st.container(border=True):
 
     # ---- Monte Carlo --------------------------------------------------
     with rl_tabs[4]:
+        _explainer("monte_carlo")
         if rl_mc_df.empty:
             st.info(
                 "No Monte Carlo results yet. Run a backtest (so trades.csv "
@@ -1545,6 +1905,7 @@ with st.container(border=True):
 
     # ---- Research summary ---------------------------------------------
     with rl_tabs[5]:
+        _explainer("summary")
         rl_summary_df = _research_csv("research_summary.csv")
         if rl_summary_df.empty:
             st.info("No research summary yet. Run **Run research lab**.")
@@ -1556,11 +1917,26 @@ with st.container(border=True):
                 "data (often too few trades).</div>",
                 unsafe_allow_html=True,
             )
+            VERDICT_PLAIN: Dict[str, str] = {
+                "PASS": (
+                    "The strategy passed this check based on the current "
+                    "rules, but it still needs more validation."
+                ),
+                "FAIL": (
+                    "The strategy failed this check. The evidence is "
+                    "against it for this lens."
+                ),
+                "INCONCLUSIVE": (
+                    "The result is not reliable — usually because there "
+                    "are too few trades or too little data to call."
+                ),
+            }
             for _, r in rl_summary_df.iterrows():
                 v = str(r["verdict"])
                 cls = ("pill-pos" if v == "PASS"
                        else "pill-neg" if v == "FAIL"
                        else "pill-amber")
+                plain = VERDICT_PLAIN.get(v, "")
                 st.markdown(
                     f"<div style='display:flex;gap:0.6rem;align-items:flex-start;"
                     f"padding:0.5rem 0;border-bottom:1px dashed "
@@ -1569,7 +1945,7 @@ with st.container(border=True):
                     f"<span class='pill-dot'></span>{v}</span>"
                     f"<div><b>{r['check']}</b><br>"
                     f"<span style='color:#9ca3af;font-size:0.88rem;'>"
-                    f"{r['message']}</span></div></div>",
+                    f"{plain} <i>{r['message']}</i></span></div></div>",
                     unsafe_allow_html=True,
                 )
             st.download_button(
