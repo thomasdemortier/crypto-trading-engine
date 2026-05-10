@@ -41,6 +41,16 @@ class ArchivedBranch:
     one_line_reason: str
     report_path: Optional[str] = None
     merge_allowed: bool = False
+    # Optional commit + tag pointers for archived research that we
+    # never want to merge but want to be able to revisit. Both fields
+    # default to None so existing entries keep their original schema.
+    archive_commit: Optional[str] = None
+    archive_tag: Optional[str] = None
+    # Per-row trading flags. Both default False; a unit test asserts
+    # that no row in the ledger flips either to True, regardless of
+    # verdict.
+    paper_trading_allowed: bool = False
+    live_trading_allowed: bool = False
 
 
 KIND_STRATEGY = "strategy"
@@ -150,6 +160,28 @@ ARCHIVED_BRANCHES: Tuple[ArchivedBranch, ...] = (
         ),
         report_path="reports/free_open_data_reaudit_report.md",
     ),
+    ArchivedBranch(
+        branch="research/portfolio-rebalancing-strategy-v1",
+        kind=KIND_STRATEGY,
+        verdict="FAIL",
+        one_line_reason=(
+            "Sharpe was within 0.10 of BTC and the rebalance count "
+            "passed, but max drawdown improvement was only 10.78 pp "
+            "vs the required 15 pp, and the strategy lost to the "
+            "placebo median return."
+        ),
+        # Report and strategy code live ONLY on the archived branch —
+        # they are never merged into main. The dashboard's
+        # `report_text()` falls back gracefully when this path is
+        # absent on the current checkout.
+        report_path=(
+            "reports/portfolio_rebalancing_report.md "
+            "(on archived branch — checkout "
+            "research/portfolio-rebalancing-strategy-v1 to read inline)"
+        ),
+        archive_commit="19b1268",
+        archive_tag="fail-portfolio-rebalancing-strategy-v1",
+    ),
 )
 
 
@@ -221,9 +253,15 @@ def archived_timeline_dataframe() -> pd.DataFrame:
         "one_line_reason": b.one_line_reason,
         "report_path": b.report_path or "",
         "merge_allowed": bool(b.merge_allowed),
+        "paper_trading_allowed": bool(b.paper_trading_allowed),
+        "live_trading_allowed": bool(b.live_trading_allowed),
+        "archive_commit": b.archive_commit or "",
+        "archive_tag": b.archive_tag or "",
     } for b in ARCHIVED_BRANCHES]
     cols = ["branch", "kind", "verdict", "one_line_reason",
-             "report_path", "merge_allowed"]
+             "report_path", "merge_allowed",
+             "paper_trading_allowed", "live_trading_allowed",
+             "archive_commit", "archive_tag"]
     return pd.DataFrame(rows, columns=cols)
 
 

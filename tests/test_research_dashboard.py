@@ -34,6 +34,7 @@ EXPECTED_ARCHIVED_BRANCHES = {
     "research/strategy-7-relative-value-btc-eth",
     "research/strategy-8-paid-data-decision-audit",
     "research/strategy-9-free-open-data-reaudit",
+    "research/portfolio-rebalancing-strategy-v1",
 }
 
 
@@ -74,9 +75,85 @@ def test_archived_timeline_dataframe_columns_locked():
     assert list(df.columns) == [
         "branch", "kind", "verdict", "one_line_reason",
         "report_path", "merge_allowed",
+        "paper_trading_allowed", "live_trading_allowed",
+        "archive_commit", "archive_tag",
     ]
     assert (~df["merge_allowed"].astype(bool)).all()
+    assert (~df["paper_trading_allowed"].astype(bool)).all()
+    assert (~df["live_trading_allowed"].astype(bool)).all()
     assert len(df) == len(rd.ARCHIVED_BRANCHES)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio rebalancing FAIL — archive row invariants
+# ---------------------------------------------------------------------------
+def _portfolio_rebalancing_entry() -> rd.ArchivedBranch:
+    matches = [b for b in rd.ARCHIVED_BRANCHES
+                if b.branch == "research/portfolio-rebalancing-strategy-v1"]
+    assert len(matches) == 1, (
+        "exactly one archive row expected for portfolio rebalancing"
+    )
+    return matches[0]
+
+
+def test_portfolio_rebalancing_archive_entry_present():
+    e = _portfolio_rebalancing_entry()
+    assert e.kind == rd.KIND_STRATEGY
+    assert e.verdict == "FAIL"
+
+
+def test_portfolio_rebalancing_archive_merge_allowed_false():
+    e = _portfolio_rebalancing_entry()
+    assert e.merge_allowed is False
+
+
+def test_portfolio_rebalancing_archive_paper_and_live_false():
+    e = _portfolio_rebalancing_entry()
+    assert e.paper_trading_allowed is False
+    assert e.live_trading_allowed is False
+
+
+def test_portfolio_rebalancing_archive_carries_commit_and_tag():
+    e = _portfolio_rebalancing_entry()
+    assert e.archive_commit == "19b1268"
+    assert e.archive_tag == "fail-portfolio-rebalancing-strategy-v1"
+
+
+def test_portfolio_rebalancing_archive_reason_mentions_locked_facts():
+    """The reason text must record both gates that failed (DD pp + placebo
+    return) — those are the load-bearing facts of this archive entry."""
+    e = _portfolio_rebalancing_entry()
+    low = e.one_line_reason.lower()
+    assert "10.78" in low
+    assert "15 pp" in low
+    assert "placebo" in low
+
+
+def test_portfolio_rebalancing_archive_report_path_marked_archived():
+    """Strategy code + report live ONLY on the archived branch — the
+    report_path should explicitly say so so a checkout of `main`
+    doesn't render a misleading 'file not found' as the canonical
+    error message."""
+    e = _portfolio_rebalancing_entry()
+    assert e.report_path is not None
+    low = e.report_path.lower()
+    assert "archived" in low or "archive" in low
+
+
+def test_strategy_implementation_files_not_present_on_main():
+    """Sanity check: this archive branch must NOT have copied the
+    strategy implementation across. Failed strategy code stays only
+    on the archived branch."""
+    repo_root = Path(__file__).resolve().parents[1]
+    forbidden = (
+        repo_root / "src" / "strategies"
+                   / "portfolio_rebalancing_allocator.py",
+        repo_root / "src" / "portfolio_rebalancing_research.py",
+    )
+    for p in forbidden:
+        assert not p.exists(), (
+            f"failed strategy file leaked into main: {p}"
+        )
 
 
 # ---------------------------------------------------------------------------
