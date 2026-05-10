@@ -229,6 +229,47 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Branch experiment: CoinGlass keyed data-depth audit
+
+Branch `research/strategy-9-coinglass-keyed-data-audit` is a
+**data-depth verification audit only**.
+
+* No strategy was built.
+* No backtest was run.
+* No broker integration; no order placement.
+* No Kraken connection — CoinGlass is signal data only; Kraken stays a
+  possible future execution venue, only if a strategy ever passes.
+* Paper trading remains disabled.
+* Execution remains locked.
+* No API key is committed, printed, or written to results.
+
+The audit reads `COINGLASS_API_KEY` from the environment **only at
+runtime**, sends it as the `CG-API-KEY` header to CoinGlass v3 paid
+endpoints, and records, per (BTC|ETH) × (OI / liquidations / long-short
+ratios / funding / basis) probe: actual start, actual end, row count,
+coverage_days, granularity, decision_status. Decision rule:
+
+* **GO** if at least 2 priority field classes return `>= 1460 days`
+  (PASS) for **both** BTC and ETH.
+* **NO-GO** if fewer than 2 PASS field classes per asset.
+* **INCONCLUSIVE** if `COINGLASS_API_KEY` is not set or the API
+  rejects every probe with auth/rate-limit errors.
+
+Run it locally:
+
+```bash
+export COINGLASS_API_KEY=...    # never commit this value
+python main.py audit_coinglass_keyed_data
+```
+
+The output CSV at `results/coinglass_keyed_data_audit.csv` is
+generated, not tracked. The honest verdict and the recommended next
+step are in
+[`reports/coinglass_keyed_data_audit_report.md`](reports/coinglass_keyed_data_audit_report.md).
+
+Tests run entirely offline — no real API key is required to verify
+the audit logic; the HTTP layer is mocked.
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.

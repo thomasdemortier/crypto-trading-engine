@@ -27,6 +27,7 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py audit_coinglass_keyed_data   # needs COINGLASS_API_KEY env
 """
 
 from __future__ import annotations
@@ -40,10 +41,10 @@ import pandas as pd
 
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
-    config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, oos_audit, paper_trader, performance,
-    portfolio_audit, portfolio_research, research, safety_lock,
-    strategy_registry, system_health, utils,
+    coinglass_keyed_data_audit, config, crypto_regime_signals,
+    data_collector, decision_journal, dry_run_planner, oos_audit,
+    paper_trader, performance, portfolio_audit, portfolio_research,
+    research, safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -553,6 +554,56 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
         print(sc.to_string(index=False))
+    return 0
+
+
+def cmd_audit_coinglass_keyed_data(args: argparse.Namespace) -> int:
+    """Run the CoinGlass keyed data-depth audit. Reads
+    `COINGLASS_API_KEY` from the environment ONLY at runtime; the key
+    value is never printed. Writes
+    `results/coinglass_keyed_data_audit.csv`."""
+    utils.assert_paper_only()
+    df = coinglass_keyed_data_audit.run_audit(save=True)
+    summary = coinglass_keyed_data_audit.summarise(df)
+    print("\n=== CoinGlass keyed data-depth audit ===")
+    print(f"  API key present     : "
+          f"{'yes' if summary['api_key_present'] else 'no'}")
+    print(f"  datasets tested     : {summary['n']}")
+    print(f"  PASS                : {summary['pass']}")
+    print(f"  WARNING             : {summary['warning']}")
+    print(f"  FAIL                : {summary['fail']}")
+    print(f"  INCONCLUSIVE        : {summary['inconclusive']}")
+    print(f"  AUTH_FAILED         : {summary['auth_failed']}")
+    print(f"  RATE_LIMITED        : {summary['rate_limited']}")
+    print(f"  ENDPOINT_NOT_AVAIL  : {summary['endpoint_not_available']}")
+    print()
+    print(f"  BTC PASS field classes ({summary['btc_pass_count']}): "
+          f"{summary['btc_pass_field_classes']}")
+    print(f"  ETH PASS field classes ({summary['eth_pass_count']}): "
+          f"{summary['eth_pass_field_classes']}")
+    print()
+    verdict = summary["verdict"]
+    if verdict == "GO":
+        print("  Decision rule: >= 2 PASS field classes for BOTH "
+              "BTC and ETH satisfied.")
+        print("  Verdict: GO — strategy work is justified.")
+        print("  Execution remains locked. Independent review required "
+              "before any trading.")
+    elif verdict == "NO_GO":
+        print("  Decision rule: < 2 PASS field classes for at least "
+              "one of BTC / ETH.")
+        print("  Verdict: NO-GO — stop buying data. Accept BTC "
+              "buy-and-hold as baseline.")
+    else:
+        print("  Verdict: INCONCLUSIVE — set COINGLASS_API_KEY in your "
+              "environment and re-run.")
+    cols = [c for c in ("dataset", "asset", "decision_status",
+                          "coverage_days", "row_count", "http_status",
+                          "usable_reason")
+            if c in df.columns]
+    print()
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/coinglass_keyed_data_audit.csv")
     return 0
 
 
@@ -1119,6 +1170,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    sp = sub.add_parser(
+        "audit_coinglass_keyed_data",
+        help=("Probe CoinGlass v3 paid endpoints with a local API "
+              "key (env: COINGLASS_API_KEY). Verifies actual data "
+              "depth for BTC + ETH OI, liquidations, long/short "
+              "ratios, funding, and basis. Read-only; key is never "
+              "printed. Writes "
+              "results/coinglass_keyed_data_audit.csv."),
+    )
+    sp.set_defaults(func=cmd_audit_coinglass_keyed_data)
 
     sp = sub.add_parser(
         "bot_status",
