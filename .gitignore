@@ -23,6 +23,9 @@ env/
 # Cached data and runtime artifacts
 data/raw/*.csv
 data/processed/*.csv
+data/fx/*.csv
+data/fx/*.parquet
+data/fx/*.json
 logs/*.csv
 results/*.csv
 results/*.json
@@ -34,6 +37,7 @@ data/portfolio_holdings_*.csv
 # But keep folder structure
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/fx/.gitkeep
 !logs/.gitkeep
 !results/.gitkeep
 
