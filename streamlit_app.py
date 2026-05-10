@@ -25,7 +25,7 @@ import streamlit as st
 from src import (
     config, backtester, data_collector, health_snapshot, paper_trader,
     performance, plotting, portfolio_risk, research,
-    research_dashboard, utils,
+    research_dashboard, strategy_universe_selection, utils,
 )
 
 
@@ -1461,6 +1461,83 @@ with st.container(border=True):
             "Paper trading, live trading, Kraken connection, API key "
             "entry, and order placement are all out of scope.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Strategy Universe Selection — read-only ranking of candidate universes
+# the project could pursue NEXT, with locked decision statuses. Sits
+# below the Research Dashboard. No execution surface.
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Strategy Universe Selection</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Read-only ranking of candidate universes the project could "
+        "pursue next. Recommendation points at the next "
+        "<b>research branch</b> only — never at trading, paper "
+        "trading, broker connection, or order placement. Locked "
+        "decision statuses: RECOMMENDED, WATCHLIST, NOT_NOW, REJECTED."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    sus_table = strategy_universe_selection.rank_universes()
+    sus_top = strategy_universe_selection.top_recommendation()
+
+    cols_top = st.columns(3)
+    cols_top[0].metric("Recommended universe",
+                          sus_top["universe"])
+    cols_top[1].metric("Composite score",
+                          f"{sus_top['score']:.2f}")
+    cols_top[2].metric("Decision",
+                          sus_top["decision_status"])
+    st.info(
+        "**Recommended next research branch:** "
+        + sus_top["recommended_next_action"],
+    )
+
+    def _row_style(row: pd.Series) -> List[str]:
+        ds = str(row.get("decision_status", "")).upper()
+        if ds == "RECOMMENDED":
+            return ["background-color: #dcfce7"] * len(row)
+        if ds == "WATCHLIST":
+            return ["background-color: #fef3c7"] * len(row)
+        if ds == "REJECTED":
+            return ["background-color: #fee2e2"] * len(row)
+        if ds == "NOT_NOW":
+            return ["background-color: #e5e7eb"] * len(row)
+        return [""] * len(row)
+
+    cols = [c for c in (
+        "rank", "universe", "score", "decision_status",
+        "data_score", "execution_score", "edge_score",
+        "complexity_score", "risk_score",
+    ) if c in sus_table.columns]
+    try:
+        styled = sus_table[cols].style.apply(_row_style, axis=1)
+        st.dataframe(styled, use_container_width=True,
+                      hide_index=True, height=200)
+    except Exception:  # noqa: BLE001 — Streamlit version drift
+        st.dataframe(sus_table[cols], use_container_width=True,
+                      hide_index=True, height=200)
+
+    with st.expander("Per-universe rationale + recommended next action"):
+        for _, row in sus_table.iterrows():
+            st.markdown(f"### {int(row['rank'])}. {row['universe']} "
+                          f"— {row['decision_status']} "
+                          f"({row['score']:.2f})")
+            st.caption(str(row["notes"]))
+            st.markdown("**Recommended next action:** "
+                          + str(row["recommended_next_action"]))
+            st.markdown("---")
+    st.error(
+        "This section is a research-decision artefact only. The "
+        "recommendation is to open a research branch — NOT to "
+        "trade, paper-trade, place orders, or connect a broker.",
+    )
 
 
 # ---------------------------------------------------------------------------
