@@ -27,6 +27,7 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py write_health_snapshot
 """
 
 from __future__ import annotations
@@ -41,9 +42,9 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, oos_audit, paper_trader, performance,
-    portfolio_audit, portfolio_research, research, safety_lock,
-    strategy_registry, system_health, utils,
+    dry_run_planner, health_snapshot, oos_audit, paper_trader,
+    performance, portfolio_audit, portfolio_research, research,
+    safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -871,6 +872,31 @@ def cmd_system_health(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_write_health_snapshot(args: argparse.Namespace) -> int:
+    """Write one row to the gitignored health-snapshot CSV. Read-only
+    over safety_lock / system_health / strategy_registry / portfolio_risk.
+    Never crashes on a missing portfolio file."""
+    utils.assert_paper_only()
+    snap = health_snapshot.collect_health_snapshot()
+    out = health_snapshot.append_health_snapshot(snapshot=snap)
+    print(
+        f"health_snapshot: lock={snap['safety_lock_status']} "
+        f"sh_pass={snap['system_health_pass_count']}/"
+        f"sh_warn={snap['system_health_warning_count']}/"
+        f"sh_fail={snap['system_health_fail_count']} "
+        f"strat_pass={snap['strategy_pass_count']}/"
+        f"fail={snap['strategy_fail_count']}/"
+        f"inconclusive={snap['strategy_inconclusive_count']} "
+        f"portfolio_present={snap['portfolio_file_present']} "
+        f"risk={snap['portfolio_risk_classification']} "
+        f"@ {snap['snapshot_timestamp']}",
+    )
+    if snap["notes"]:
+        print(f"  notes: {snap['notes']}")
+    print(f"Appended → {out}")
+    return 0
+
+
 def cmd_safety_status(args: argparse.Namespace) -> int:
     s = safety_lock.status()
     print("\n=== safety lock status ===")
@@ -1186,6 +1212,16 @@ def build_parser() -> argparse.ArgumentParser:
               "no broker keys, safety lock locked). Read-only."),
     )
     sp.set_defaults(func=cmd_system_health)
+
+    sp = sub.add_parser(
+        "write_health_snapshot",
+        help=("Append one row to results/health_snapshots.csv "
+              "capturing safety lock + system health + strategy "
+              "registry + portfolio risk state. Read-only; output "
+              "file is gitignored."),
+    )
+    sp.set_defaults(func=cmd_write_health_snapshot)
+
     sp = sub.add_parser("audit_oos",
                         help="Audit walk-forward window mechanics.")
     sp.set_defaults(func=cmd_audit_oos)

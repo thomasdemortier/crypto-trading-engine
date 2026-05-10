@@ -284,6 +284,31 @@ produce strategy signals.
 See [`docs/portfolio_risk_dashboard.md`](docs/portfolio_risk_dashboard.md)
 for the CSV format, the locked thresholds, and the safety rules.
 
+## Health snapshots
+
+The engine can append a single row of bot state to a gitignored CSV
+on demand. Each row captures: safety lock status, execution / paper /
+Kraken flags, system-health pass / warning / fail counts, strategy
+registry verdict counts, and (if a portfolio CSV is present)
+portfolio total market value, risk classification, and
+recommendation. No trading. No execution. No broker. No API keys.
+
+Run from the CLI:
+
+```bash
+python main.py write_health_snapshot
+```
+
+Output is appended to `results/health_snapshots.csv` (gitignored —
+covered by the existing `results/*.csv` rule). The Streamlit
+**Health Timeline** section reads the file and renders the most
+recent 50 rows, plus a per-snapshot summary of locked / unlocked
+state and warnings. The dashboard intentionally does not expose a
+"write snapshot" button — snapshots are written from the CLI only.
+
+See [`docs/health_snapshots.md`](docs/health_snapshots.md) for the
+locked schema, what the snapshot tracks, and what it does not do.
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.
