@@ -229,6 +229,38 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Branch experiment: positioning data audit
+
+Branch `research/strategy-5-paid-positioning-data-audit` is **data
+availability research only** — not a strategy.
+
+* No strategy was built.
+* No backtest was run.
+* No broker integration; no API keys; no order placement.
+* No Kraken connection.
+* Paper trading remains disabled.
+* Execution remains locked.
+
+The audit probes a curated list of public derivatives endpoints
+(Binance Futures, Bybit, OKX, Deribit) and records, for each:
+historical depth, granularity, fields available, paid vs. free,
+whether an API key is required, and a research-usability verdict
+(`PASS` ≥ 1460 days, `WARNING` 365–1459, `FAIL` < 365 or
+snapshot-only, `INCONCLUSIVE` for paid sources we cannot verify
+without a subscription). Paid sources (CoinGlass, CryptoQuant,
+Glassnode, Kaiko, Velo Data) are listed but not probed.
+
+Run it locally:
+
+```bash
+python main.py audit_positioning_data
+```
+
+The output CSV at `results/positioning_data_audit.csv` is
+**generated, not tracked** (see `.gitignore`). The honest verdict
+and best-next-source recommendation are in
+[`reports/positioning_data_audit_report.md`](reports/positioning_data_audit_report.md).
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.

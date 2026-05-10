@@ -27,6 +27,7 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py audit_positioning_data
 """
 
 from __future__ import annotations
@@ -42,8 +43,8 @@ from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
     dry_run_planner, oos_audit, paper_trader, performance,
-    portfolio_audit, portfolio_research, research, safety_lock,
-    strategy_registry, system_health, utils,
+    portfolio_audit, portfolio_research, positioning_data_audit,
+    research, safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -553,6 +554,28 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
         print(sc.to_string(index=False))
+    return 0
+
+
+def cmd_audit_positioning_data(args: argparse.Namespace) -> int:
+    """Run the positioning-data availability audit. Read-only, public
+    endpoints only. Writes results/positioning_data_audit.csv."""
+    utils.assert_paper_only()
+    df = positioning_data_audit.run_audit(save=True)
+    summary = positioning_data_audit.summarise(df)
+    print("\n=== positioning data audit ===")
+    print(f"  rows           : {summary['n']}")
+    print(f"  PASS           : {summary['pass']}")
+    print(f"  WARNING        : {summary['warning']}")
+    print(f"  FAIL           : {summary['fail']}")
+    print(f"  INCONCLUSIVE   : {summary['inconclusive']}")
+    print(f"  best candidate : {summary['best'] or '(none clears the bar)'}")
+    cols = [c for c in ("source", "dataset", "coverage_days", "granularity",
+                          "usable_for_research", "usable_reason")
+            if c in df.columns]
+    print()
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/positioning_data_audit.csv")
     return 0
 
 
@@ -1119,6 +1142,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    sp = sub.add_parser(
+        "audit_positioning_data",
+        help=("Audit public derivatives / positioning-data sources for "
+              "historical depth. Read-only, no API keys, no orders. "
+              "Writes results/positioning_data_audit.csv."),
+    )
+    sp.set_defaults(func=cmd_audit_positioning_data)
 
     sp = sub.add_parser(
         "bot_status",
