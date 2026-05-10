@@ -1227,7 +1227,7 @@ with st.container(border=True):
     rd_tabs = st.tabs([
         "Executive state", "Strategy verdicts", "Archived timeline",
         "Baseline", "Risk dashboard", "Safety + governance",
-        "Next allowed actions",
+        "Next allowed actions", "FX EOD Trend Research",
     ])
 
     # ---------------- Executive state ---------------------------------
@@ -1460,6 +1460,104 @@ with st.container(border=True):
             "This dashboard does not expose any execution surface. "
             "Paper trading, live trading, Kraken connection, API key "
             "entry, and order placement are all out of scope.",
+        )
+
+    # ---------------- FX EOD Trend Research (read-only) ---------------
+    with rd_tabs[7]:
+        st.markdown(
+            "**Read-only FX EOD trend research view.** Shows the locked "
+            "rule (EUR/USD, 200-day SMA, long-or-cash), the data quality "
+            "guard status, and whatever results CSVs are present in "
+            "`results/`. Generated CSVs are gitignored; this tab does not "
+            "execute, fetch, or persist anything — it only reads files."
+        )
+        cfg_view = pd.DataFrame([{
+            "asset": "EUR/USD",
+            "lookback_days": 200,
+            "timeframe": "1d",
+            "mode": "long_cash",
+            "source_filter": "ecb_sdmx",
+            "min_trade_count_for_pass": 20,
+            "drawdown_tighter_pp": 0.05,
+            "n_placebo_seeds": 20,
+            "n_walk_forward_windows": 5,
+        }])
+        st.markdown("**Locked configuration**")
+        st.dataframe(cfg_view, use_container_width=True, hide_index=True)
+
+        results_dir = config.RESULTS_DIR
+        report_files = {
+            "scorecard": results_dir / "fx_eod_trend_scorecard.csv",
+            "backtest": results_dir / "fx_eod_trend_backtest.csv",
+            "walk_forward": results_dir / "fx_eod_trend_walk_forward.csv",
+            "placebo": results_dir / "fx_eod_trend_placebo.csv",
+            "data_quality": results_dir / "fx_data_quality_report.csv",
+        }
+        present_table = pd.DataFrame([
+            {"file": p.name,
+             "status": "present" if p.exists() and p.stat().st_size > 0
+                          else "missing"}
+            for p in report_files.values()
+        ])
+        st.markdown("**Generated files (gitignored)**")
+        st.dataframe(present_table, use_container_width=True,
+                       hide_index=True)
+
+        # Quality guard summary (if the report is present).
+        q_path = report_files["data_quality"]
+        st.markdown("**Data quality guard**")
+        if q_path.exists() and q_path.stat().st_size > 0:
+            try:
+                q_df = pd.read_csv(q_path)
+                overall = q_df[q_df["check_name"] == "overall_verdict"]
+                verdict = (str(overall.iloc[0]["status"])
+                              if not overall.empty else "UNKNOWN")
+                st.metric("Quality verdict", verdict)
+                if verdict in ("FAIL", "INCONCLUSIVE"):
+                    st.error(
+                        "Quality verdict blocks FX EOD trend research. "
+                        "Acceptable verdicts: PASS or WARNING."
+                    )
+                elif verdict == "WARNING":
+                    st.warning(
+                        "Quality verdict is WARNING — acceptable for "
+                        "research because the warnings are real "
+                        "historical FX shocks, not data errors."
+                    )
+                else:
+                    st.success("Quality verdict is PASS.")
+                st.dataframe(q_df, use_container_width=True,
+                                hide_index=True, height=240)
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Could not read {q_path.name}: {exc}")
+        else:
+            st.caption("(no fx_data_quality_report.csv in results/ — "
+                          "run `python main.py check_fx_data_quality` first)")
+
+        # Scorecard, then walk-forward, then placebo, then backtest.
+        for label, path in (("Scorecard", report_files["scorecard"]),
+                              ("Walk-forward", report_files["walk_forward"]),
+                              ("Placebo", report_files["placebo"]),
+                              ("Backtest (last 50 rows)",
+                               report_files["backtest"])):
+            st.markdown(f"**{label}**")
+            if path.exists() and path.stat().st_size > 0:
+                try:
+                    df_view = pd.read_csv(path)
+                    if label.startswith("Backtest"):
+                        df_view = df_view.tail(50)
+                    st.dataframe(df_view, use_container_width=True,
+                                    hide_index=True, height=260)
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(f"Could not read {path.name}: {exc}")
+            else:
+                st.caption(f"(no {path.name} in results/)")
+
+        st.error(
+            "Even if the verdict is PASS, paper trading and live "
+            "trading remain blocked at the safety lock. ECB EUR/USD is "
+            "a daily reference fix, not a tradable broker quote — this "
+            "section is research-only."
         )
 
 

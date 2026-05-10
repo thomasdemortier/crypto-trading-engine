@@ -100,6 +100,14 @@ _FAMILIES: List[_FamilyMeta] = [
         headline=("Fear & Greed overlay on the prior-best vol-target "
                    "allocator"),
     ),
+    _FamilyMeta(
+        family="fx_eod_trend",
+        branch="research/fx-eod-trend-strategy-v1",
+        report_path="reports/fx_eod_trend_report.md",
+        scorecard_files=("fx_eod_trend_scorecard.csv",),
+        headline=("FX EOD long-or-cash trend (EUR/USD, 200-day SMA, "
+                   "no broker, no execution — research-only)"),
+    ),
 ]
 
 

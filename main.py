@@ -31,6 +31,11 @@ Usage:
     python main.py audit_fx_crypto_sources
     python main.py build_fx_dataset
     python main.py check_fx_data_quality
+    python main.py fx_eod_trend_backtest
+    python main.py fx_eod_trend_walk_forward
+    python main.py fx_eod_trend_placebo
+    python main.py fx_eod_trend_scorecard
+    python main.py research_all_fx_eod_trend
 """
 
 from __future__ import annotations
@@ -46,9 +51,10 @@ from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
     dry_run_planner, fx_crypto_source_audit, fx_data_quality,
-    fx_research_dataset, health_snapshot, oos_audit, paper_trader,
-    performance, portfolio_audit, portfolio_research, research,
-    safety_lock, strategy_registry, system_health, utils,
+    fx_eod_trend_research, fx_research_dataset, health_snapshot,
+    oos_audit, paper_trader, performance, portfolio_audit,
+    portfolio_research, research, safety_lock, strategy_registry,
+    system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -680,6 +686,207 @@ def cmd_check_fx_data_quality(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_fx_eod_trend_blocked(exc: Exception) -> int:
+    """Helper: when the data quality guard or dataset loader refuses,
+    print a clear message and exit 2 (INCONCLUSIVE)."""
+    print(f"\n[INCONCLUSIVE] FX EOD trend research blocked: {exc}")
+    return 2
+
+
+def _try_load_and_guard():
+    """Wrap load_and_guard so the CLI handlers can degrade cleanly."""
+    try:
+        df, report = fx_eod_trend_research.load_and_guard()
+        return df, report, None
+    except (fx_eod_trend_research.FxEodTrendBlockedError,
+            fx_data_quality.FxDatasetMissingError,
+            FileNotFoundError) as exc:
+        return None, None, exc
+
+
+def cmd_fx_eod_trend_backtest(args: argparse.Namespace) -> int:
+    """Run the locked-rule full-window backtest (read-only)."""
+    utils.assert_paper_only()
+    df, report, exc = _try_load_and_guard()
+    if exc is not None:
+        return _print_fx_eod_trend_blocked(exc)
+    cfg = fx_eod_trend_research.fx_eod_trend.FXEODTrendConfig()
+    bt = fx_eod_trend_research.run_full_window_backtest(cfg, df)
+    if bt.empty:
+        print("\n[INCONCLUSIVE] backtest produced 0 rows "
+              "(insufficient data after warmup).")
+        return 2
+    fx_eod_trend_research.write_csv(
+        bt, fx_eod_trend_research.BACKTEST_PATH,
+    )
+    s_total = fx_eod_trend_research.fx_eod_trend.total_return_from_returns(
+        bt["strategy_return"]
+    )
+    b_total = fx_eod_trend_research.fx_eod_trend.total_return_from_returns(
+        bt["benchmark_buyhold_return"]
+    )
+    s_dd = fx_eod_trend_research.fx_eod_trend.max_drawdown_from_equity(
+        bt["strategy_equity"]
+    )
+    b_dd = fx_eod_trend_research.fx_eod_trend.max_drawdown_from_equity(
+        bt["benchmark_buyhold_equity"]
+    )
+    n_trades = fx_eod_trend_research.fx_eod_trend \
+        .trade_count_from_position(bt["position"])
+    exposure = fx_eod_trend_research.fx_eod_trend \
+        .exposure_pct_from_position(bt["position"])
+    print(f"\n=== FX EOD trend backtest ({cfg.asset}, "
+          f"{cfg.lookback_days}-day SMA) ===")
+    print(f"  rows                : {len(bt)}")
+    print(f"  date range          : {bt['date'].min().date()} → "
+          f"{bt['date'].max().date()}")
+    print(f"  strategy return     : {s_total:+.4%}")
+    print(f"  benchmark return    : {b_total:+.4%}")
+    print(f"  strategy max DD     : {s_dd:+.4%}")
+    print(f"  benchmark max DD    : {b_dd:+.4%}")
+    print(f"  trade count         : {n_trades}")
+    print(f"  exposure_pct        : {exposure:.2f}%")
+    print(f"\nSaved → {fx_eod_trend_research.BACKTEST_PATH}")
+    print(f"data quality verdict : {report.verdict}")
+    return 0
+
+
+def cmd_fx_eod_trend_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df, report, exc = _try_load_and_guard()
+    if exc is not None:
+        return _print_fx_eod_trend_blocked(exc)
+    cfg = fx_eod_trend_research.fx_eod_trend.FXEODTrendConfig()
+    wf = fx_eod_trend_research.run_walk_forward(cfg, df)
+    if wf.empty:
+        print("\n[INCONCLUSIVE] walk-forward produced 0 windows.")
+        return 2
+    fx_eod_trend_research.write_csv(
+        wf, fx_eod_trend_research.WALK_FORWARD_PATH,
+    )
+    print(f"\n=== FX EOD trend walk-forward ({len(wf)} windows) ===")
+    cols = ["window_id", "start_date", "end_date",
+            "strategy_total_return", "benchmark_total_return",
+            "strategy_sharpe", "benchmark_sharpe",
+            "strategy_max_drawdown", "benchmark_max_drawdown",
+            "trade_count"]
+    print(wf[cols].to_string(index=False))
+    n_beat_ret = int(wf["strategy_beats_benchmark_return"].sum())
+    n_beat_sh = int(wf["strategy_beats_benchmark_sharpe"].sum())
+    print(f"\nstrategy beats buy-and-hold return : {n_beat_ret}/{len(wf)}")
+    print(f"strategy beats buy-and-hold sharpe : {n_beat_sh}/{len(wf)}")
+    print(f"\nSaved → {fx_eod_trend_research.WALK_FORWARD_PATH}")
+    return 0
+
+
+def cmd_fx_eod_trend_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df, report, exc = _try_load_and_guard()
+    if exc is not None:
+        return _print_fx_eod_trend_blocked(exc)
+    cfg = fx_eod_trend_research.fx_eod_trend.FXEODTrendConfig()
+    pb = fx_eod_trend_research.run_placebo(cfg, df)
+    if pb.empty:
+        print("\n[INCONCLUSIVE] placebo produced 0 rows.")
+        return 2
+    fx_eod_trend_research.write_csv(
+        pb, fx_eod_trend_research.PLACEBO_PATH,
+    )
+    bt = fx_eod_trend_research.run_full_window_backtest(cfg, df)
+    s_total = fx_eod_trend_research.fx_eod_trend.total_return_from_returns(
+        bt["strategy_return"]
+    )
+    s_dd = fx_eod_trend_research.fx_eod_trend.max_drawdown_from_equity(
+        bt["strategy_equity"]
+    )
+    p_ret_med = float(pb["total_return"].median())
+    p_dd_med = float(pb["max_drawdown"].median())
+    print(f"\n=== FX EOD trend placebo ({len(pb)} seeds, matched "
+          f"exposure) ===")
+    print(f"  strategy total return : {s_total:+.4%}")
+    print(f"  placebo median return : {p_ret_med:+.4%}")
+    print(f"  strategy max drawdown : {s_dd:+.4%}")
+    print(f"  placebo median DD     : {p_dd_med:+.4%}")
+    print(f"  beats placebo return  : "
+          f"{'yes' if s_total > p_ret_med else 'no'}")
+    print(f"  beats placebo DD      : "
+          f"{'yes' if s_dd > p_dd_med else 'no'}")
+    print(f"\nSaved → {fx_eod_trend_research.PLACEBO_PATH}")
+    return 0
+
+
+def cmd_fx_eod_trend_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df, report, exc = _try_load_and_guard()
+    if exc is not None:
+        return _print_fx_eod_trend_blocked(exc)
+    cfg = fx_eod_trend_research.fx_eod_trend.FXEODTrendConfig()
+    bt = fx_eod_trend_research.run_full_window_backtest(cfg, df)
+    pb = fx_eod_trend_research.run_placebo(cfg, df)
+    wf = fx_eod_trend_research.run_walk_forward(cfg, df)
+    sc = fx_eod_trend_research.compute_scorecard(
+        cfg, bt, pb, walk_forward=wf, quality_verdict=report.verdict,
+    )
+    fx_eod_trend_research.write_csv(
+        sc, fx_eod_trend_research.SCORECARD_PATH,
+    )
+    print(f"\n=== FX EOD trend scorecard ===")
+    cols = ["strategy_name", "asset", "verdict",
+            "total_return", "benchmark_total_return",
+            "sharpe", "benchmark_sharpe",
+            "max_drawdown", "benchmark_max_drawdown",
+            "drawdown_improvement_pp",
+            "placebo_median_return", "placebo_median_drawdown",
+            "trade_count", "exposure_percent",
+            "checks_passed", "checks_total"]
+    print(sc[cols].to_string(index=False))
+    note = sc.iloc[0].get("notes", "")
+    if note:
+        print(f"\n  notes: {note}")
+    print(f"\nSaved → {fx_eod_trend_research.SCORECARD_PATH}")
+    if sc.iloc[0]["verdict"] == fx_eod_trend_research.VERDICT_FAIL:
+        return 1
+    if sc.iloc[0]["verdict"] == fx_eod_trend_research.VERDICT_INCONCLUSIVE:
+        return 2
+    return 0
+
+
+def cmd_research_all_fx_eod_trend(args: argparse.Namespace) -> int:
+    """Full pipeline: backtest + walk-forward + placebo + scorecard.
+    Always writes the four CSVs; exits 0 / 1 / 2 by verdict."""
+    utils.assert_paper_only()
+    try:
+        bundle = fx_eod_trend_research.run_full_research()
+    except (fx_eod_trend_research.FxEodTrendBlockedError,
+            fx_data_quality.FxDatasetMissingError,
+            FileNotFoundError) as exc:
+        return _print_fx_eod_trend_blocked(exc)
+    sc = bundle.scorecard
+    print(f"\n=== FX EOD trend research_all ===")
+    print(f"  data quality verdict : {bundle.quality_verdict}")
+    print(f"  backtest rows        : {len(bundle.backtest)}")
+    print(f"  walk-forward windows : {len(bundle.walk_forward)}")
+    print(f"  placebo seeds        : {len(bundle.placebo)}")
+    print(f"  verdict              : {sc.iloc[0]['verdict']}")
+    cols = ["total_return", "benchmark_total_return",
+            "sharpe", "benchmark_sharpe",
+            "max_drawdown", "benchmark_max_drawdown",
+            "drawdown_improvement_pp", "trade_count",
+            "exposure_percent", "checks_passed", "checks_total"]
+    print(sc[cols].to_string(index=False))
+    note = sc.iloc[0].get("notes", "")
+    if note:
+        print(f"\n  notes: {note}")
+    print()
+    for k, v in bundle.written.items():
+        print(f"Saved → {v}")
+    if sc.iloc[0]["verdict"] == fx_eod_trend_research.VERDICT_FAIL:
+        return 1
+    if sc.iloc[0]["verdict"] == fx_eod_trend_research.VERDICT_INCONCLUSIVE:
+        return 2
+    return 0
+
+
 def cmd_audit_oos(args: argparse.Namespace) -> int:
     utils.assert_paper_only()
     audit_df, summary_df = oos_audit.audit_walk_forward(save=True)
@@ -1292,6 +1499,49 @@ def build_parser() -> argparse.ArgumentParser:
               "No broker, no execution, no API keys."),
     )
     sp.set_defaults(func=cmd_check_fx_data_quality)
+
+    sp = sub.add_parser(
+        "fx_eod_trend_backtest",
+        help=("Full-window backtest for the locked FX EOD trend rule "
+              "(EUR/USD, 200-day SMA, long-or-cash). Read-only, no "
+              "broker, no execution. Writes "
+              "results/fx_eod_trend_backtest.csv (gitignored)."),
+    )
+    sp.set_defaults(func=cmd_fx_eod_trend_backtest)
+
+    sp = sub.add_parser(
+        "fx_eod_trend_walk_forward",
+        help=("Walk-forward stability report for the FX EOD trend rule. "
+              "Read-only. Writes results/fx_eod_trend_walk_forward.csv "
+              "(gitignored)."),
+    )
+    sp.set_defaults(func=cmd_fx_eod_trend_walk_forward)
+
+    sp = sub.add_parser(
+        "fx_eod_trend_placebo",
+        help=("20-seed matched-exposure placebo for the FX EOD trend "
+              "rule. Read-only. Writes results/fx_eod_trend_placebo.csv "
+              "(gitignored)."),
+    )
+    sp.set_defaults(func=cmd_fx_eod_trend_placebo)
+
+    sp = sub.add_parser(
+        "fx_eod_trend_scorecard",
+        help=("Compute the FX EOD trend scorecard from backtest + "
+              "placebo + walk-forward. Read-only. Writes "
+              "results/fx_eod_trend_scorecard.csv (gitignored). Exits "
+              "0 PASS, 1 FAIL, 2 INCONCLUSIVE."),
+    )
+    sp.set_defaults(func=cmd_fx_eod_trend_scorecard)
+
+    sp = sub.add_parser(
+        "research_all_fx_eod_trend",
+        help=("End-to-end: backtest + walk-forward + placebo + "
+              "scorecard for the FX EOD trend rule. Read-only. Writes "
+              "all four CSVs (gitignored). Exits 0 PASS, 1 FAIL, 2 "
+              "INCONCLUSIVE."),
+    )
+    sp.set_defaults(func=cmd_research_all_fx_eod_trend)
 
     sp = sub.add_parser(
         "bot_status",
