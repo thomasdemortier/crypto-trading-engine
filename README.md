@@ -229,6 +229,34 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Current project state
+
+* **BTC buy-and-hold is the production baseline.**
+* **No strategy has passed the conservative scorecard.** Nine archived
+  research branches are kept as decision evidence — none are merged
+  into `main`.
+* The engine is now used as a **research and risk dashboard**:
+  scorecard surfacing, archived-verdict tracking, baseline metrics,
+  and decision-journal review.
+* **Execution remains locked.** Kraken is not connected. Paper
+  trading and live trading are both disabled and have no entry point
+  in the codebase.
+* The Streamlit app exposes a `Research Dashboard` section
+  (executive state, strategy verdicts, archived timeline, baseline,
+  risk dashboard, safety + governance, next allowed actions). It is
+  read-only.
+* Archived research branches: `research/fail-1-funding-derivatives`,
+  `research/strategy-2-market-structure`,
+  `research/strategy-3-sentiment-fear-greed`,
+  `research/strategy-4-drawdown-targeted-btc`,
+  `research/strategy-5-paid-positioning-data-audit`,
+  `research/strategy-6-funding-basis-carry`,
+  `research/strategy-7-relative-value-btc-eth`,
+  `research/strategy-8-paid-data-decision-audit`,
+  `research/strategy-9-free-open-data-reaudit`. See
+  [`docs/research_dashboard.md`](docs/research_dashboard.md) for what
+  the dashboard shows and what NOT to do with it.
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.
