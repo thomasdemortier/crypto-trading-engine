@@ -15,6 +15,43 @@ when BTC is above the 200d MA and alt breadth is strong.
 > per the rules: it failed, and parameters were NOT retuned. Execution
 > remains locked.
 
+## One-line conclusion
+
+> Continuous BTC drawdown targeting improves drawdown materially, but
+> gives up too much upside and does not beat BTC reliably out of
+> sample.
+
+## Framing
+
+The strategy is **risk control, not alpha.** It protects capital better
+than BTC (max drawdown 29 pp tighter, beats the random-bucket placebo on
+both return and drawdown), but it does not beat BTC often enough to be a
+trading edge. It is closer to a **defensive BTC allocation model** than
+a profitable strategy.
+
+This branch is **not merged into `main` as a winning strategy.** It is
+archived as a FAILED research family with the verdict, scorecard, and
+report intact for the record.
+
+## Next research directions
+
+A simple exposure rule on BTC price + drawdown is not enough to clear
+the bar. The next serious research direction should be one of:
+
+1. **Better BTC timing signal** — something with leading information,
+   not just a price-derived overlay (e.g. on-chain regime detection,
+   spot/perp basis, futures term-structure).
+2. **Paid OI / market positioning data** — institutional positioning
+   feeds, exchange-level OI breakdown, options skew.
+3. **Long–short / relative-value strategy** — pairs or basket spreads
+   instead of long-only exposure.
+4. **Accept BTC buy-and-hold as the baseline** — i.e. stop trying to
+   beat it with rule-based allocators and use the engine for risk
+   reporting rather than alpha generation.
+
+Bluntly: the engine is doing its job. It keeps rejecting strategies
+that sound clever but do not beat BTC.
+
 ## What the strategy does
 
 A long-only continuous-exposure allocator. Inputs (all derived from
