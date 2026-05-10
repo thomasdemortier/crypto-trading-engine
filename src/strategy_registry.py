@@ -100,6 +100,14 @@ _FAMILIES: List[_FamilyMeta] = [
         headline=("Fear & Greed overlay on the prior-best vol-target "
                    "allocator"),
     ),
+    _FamilyMeta(
+        family="drawdown_targeted_btc",
+        branch="research/strategy-4-drawdown-targeted-btc",
+        report_path="reports/drawdown_targeted_btc_report.md",
+        scorecard_files=("drawdown_targeted_btc_scorecard.csv",),
+        headline=("Continuous BTC drawdown-targeted allocator + 200d MA "
+                   "regime + optional alt overlay"),
+    ),
 ]
 
 

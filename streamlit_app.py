@@ -3165,6 +3165,159 @@ with st.expander("Debug & audit", expanded=False):
 
 
 # ---------------------------------------------------------------------------
+# Strategy 4: Drawdown-targeted BTC allocator (research-only)
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Drawdown-targeted BTC allocator (research)</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>Continuous BTC exposure driven by "
+        "BTC drawdown + 200d MA regime, with optional alt overlay. "
+        "Run <code>python main.py research_all_drawdown_targeted_btc</code> "
+        "to populate. Research only — execution remains locked.</div>",
+        unsafe_allow_html=True,
+    )
+
+    dt_tabs = st.tabs([
+        "Verdict", "Equity comparison", "Walk-forward",
+        "Placebo", "Diagnostics",
+    ])
+
+    dt_sc = _research_csv("drawdown_targeted_btc_scorecard.csv")
+    dt_cmp = _research_csv("drawdown_targeted_btc_comparison.csv")
+    dt_wf = _research_csv("drawdown_targeted_btc_walk_forward.csv")
+    dt_plac = _research_csv("drawdown_targeted_btc_placebo.csv")
+    dt_diag = _research_csv("drawdown_targeted_btc_diagnostics.csv")
+
+    with dt_tabs[0]:
+        if dt_sc.empty:
+            st.info("No scorecard yet — run "
+                    "`python main.py research_all_drawdown_targeted_btc`.")
+        else:
+            row = dt_sc.iloc[0].to_dict()
+            verdict = str(row.get("verdict", "UNKNOWN")).upper()
+            color = {
+                "PASS": "#1f9d55", "WATCHLIST": "#f6993f",
+                "FAIL": "#e3342f", "INCONCLUSIVE": "#6b7280",
+            }.get(verdict, "#6b7280")
+            st.markdown(
+                f"<div style='padding:0.6rem 1rem; border-radius:8px; "
+                f"background:{color}22; border:1px solid {color}; "
+                f"color:{color}; font-weight:700; display:inline-block;'>"
+                f"{verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(4)
+            cols[0].metric("Checks passed",
+                            f"{int(row.get('checks_passed', 0))}/"
+                            f"{int(row.get('checks_total', 0))}")
+            cols[1].metric("Pct OOS beat BTC",
+                            _fmt_pct(row.get("pct_windows_beat_btc"),
+                                       signed=False))
+            cols[2].metric("Pct OOS beat basket",
+                            _fmt_pct(row.get("pct_windows_beat_basket"),
+                                       signed=False))
+            cols[3].metric("Stability",
+                            _fmt_pct(row.get("stability_score_pct"),
+                                       signed=False))
+            cols2 = st.columns(4)
+            cols2[0].metric("Full return",
+                             _fmt_pct(row.get("strategy_full_return_pct")))
+            cols2[1].metric("Full DD",
+                             _fmt_pct(row.get("strategy_full_drawdown_pct")))
+            cols2[2].metric("BTC DD",
+                             _fmt_pct(row.get("btc_full_drawdown_pct")))
+            cols2[3].metric("Rebalances",
+                             f"{int(row.get('total_rebalances', 0))}")
+            st.caption(str(row.get("reason", "")))
+
+    with dt_tabs[1]:
+        if dt_cmp.empty:
+            st.info("No full-window comparison yet.")
+        else:
+            cols = [c for c in ("strategy", "total_return_pct",
+                                "max_drawdown_pct", "sharpe_ratio",
+                                "exposure_time_pct") if c in dt_cmp.columns]
+            st.dataframe(dt_cmp[cols], use_container_width=True,
+                          hide_index=True)
+            st.download_button(
+                "Download drawdown_targeted_btc_comparison.csv",
+                _df_to_csv_bytes(dt_cmp),
+                file_name="drawdown_targeted_btc_comparison.csv",
+                mime="text/csv", key="dl_dt_cmp",
+            )
+
+    with dt_tabs[2]:
+        if dt_wf.empty:
+            st.info("No walk-forward yet.")
+        else:
+            cols = [c for c in ("window", "oos_start_iso", "oos_end_iso",
+                                "oos_return_pct", "btc_oos_return_pct",
+                                "basket_oos_return_pct",
+                                "simple_oos_return_pct",
+                                "beats_btc", "beats_basket",
+                                "beats_simple_momentum",
+                                "n_rebalances", "oos_max_drawdown_pct")
+                    if c in dt_wf.columns]
+            st.dataframe(dt_wf[cols], use_container_width=True,
+                          hide_index=True, height=420)
+            st.download_button(
+                "Download drawdown_targeted_btc_walk_forward.csv",
+                _df_to_csv_bytes(dt_wf),
+                file_name="drawdown_targeted_btc_walk_forward.csv",
+                mime="text/csv", key="dl_dt_wf",
+            )
+
+    with dt_tabs[3]:
+        if dt_plac.empty:
+            st.info("No placebo yet.")
+        else:
+            summary_row = dt_plac.iloc[0].to_dict()
+            cols = st.columns(4)
+            cols[0].metric("Strategy return",
+                            _fmt_pct(summary_row.get("strategy_return_pct")))
+            cols[1].metric("Placebo median return",
+                            _fmt_pct(summary_row.get(
+                                "placebo_median_return_pct")))
+            cols[2].metric("Strategy DD",
+                            _fmt_pct(summary_row.get(
+                                "strategy_max_drawdown_pct")))
+            cols[3].metric("Placebo median DD",
+                            _fmt_pct(summary_row.get(
+                                "placebo_median_drawdown_pct")))
+            st.dataframe(
+                dt_plac[dt_plac["strategy"] == "placebo_seed_runs"]
+                if "strategy" in dt_plac.columns else dt_plac,
+                use_container_width=True, hide_index=True, height=320,
+            )
+            st.download_button(
+                "Download drawdown_targeted_btc_placebo.csv",
+                _df_to_csv_bytes(dt_plac),
+                file_name="drawdown_targeted_btc_placebo.csv",
+                mime="text/csv", key="dl_dt_plac",
+            )
+
+    with dt_tabs[4]:
+        if dt_diag.empty:
+            st.info("No diagnostics yet.")
+        else:
+            cols = [c for c in ("datetime", "btc_close", "btc_drawdown_pct",
+                                "btc_above_200dma", "realised_vol_30d_pct",
+                                "realised_vol_90d_pct", "btc_weight",
+                                "n_alts_held") if c in dt_diag.columns]
+            st.dataframe(dt_diag[cols], use_container_width=True,
+                          hide_index=True, height=420)
+            st.caption(
+                "Diagnostics show what the allocator was reading at each "
+                "weekly rebalance — drawdown, regime flag, vol, and the "
+                "BTC weight it actually picked."
+            )
+
+
+# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 st.markdown(
