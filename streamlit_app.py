@@ -24,7 +24,7 @@ import streamlit as st
 
 from src import (
     config, backtester, data_collector, paper_trader,
-    performance, plotting, research, utils,
+    performance, plotting, research, research_dashboard, utils,
 )
 
 
@@ -1201,6 +1201,265 @@ with st.container(border=True):
                 st.error(f"docs/unlock_procedure.md unreadable: {e}")
         else:
             st.info("docs/unlock_procedure.md is missing.")
+
+
+# ---------------------------------------------------------------------------
+# Research Dashboard — honest project state, archived verdicts, baseline
+# metrics. Read-only; no execution surface. Sits below the Bot Control
+# Center.
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Research Dashboard</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Honest project state. Production baseline is BTC buy-and-hold. "
+        "No strategy has passed. Archived research branches are kept "
+        "as decision evidence, not merge candidates."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    rd_tabs = st.tabs([
+        "Executive state", "Strategy verdicts", "Archived timeline",
+        "Baseline", "Risk dashboard", "Safety + governance",
+        "Next allowed actions",
+    ])
+
+    # ---------------- Executive state ---------------------------------
+    with rd_tabs[0]:
+        exec_state = research_dashboard.executive_state()
+        cols_top = st.columns(4)
+        cols_top[0].metric("Project mode", exec_state["project_mode"])
+        cols_top[1].metric("Active strategy",
+                              exec_state["active_strategy"])
+        cols_top[2].metric("Production baseline",
+                              exec_state["production_baseline"])
+        cols_top[3].metric("Safety lock",
+                              exec_state["safety_lock_status"])
+
+        cols_mid = st.columns(4)
+        cols_mid[0].metric("Execution allowed",
+                              "yes" if exec_state["execution_allowed"]
+                              else "no")
+        cols_mid[1].metric("Kraken connected",
+                              "yes" if exec_state["kraken_connected"]
+                              else "no")
+        cols_mid[2].metric("Paper trading",
+                              "yes" if exec_state["paper_trading"]
+                              else "no")
+        cols_mid[3].metric("Live trading",
+                              "yes" if exec_state["live_trading"]
+                              else "no")
+
+        st.info(f"Next allowed action: **{exec_state['next_allowed_action']}**")
+        if exec_state["reasons_blocked"]:
+            st.caption("Reasons execution is blocked:")
+            for r in exec_state["reasons_blocked"]:
+                st.caption(f"  · {r}")
+
+    # ---------------- Strategy verdict board --------------------------
+    with rd_tabs[1]:
+        sb = research_dashboard.strategy_verdict_board()
+        if sb.empty:
+            st.info("No strategy registry rows available — has the "
+                    "snapshot been generated?")
+        else:
+            if not research_dashboard.all_strategy_flags_off(sb):
+                st.error(
+                    "Registry has at least one row with paper or live "
+                    "trading allowed. This must be False for every row "
+                    "on this branch.",
+                )
+            cols = [c for c in (
+                "strategy_family", "branch", "verdict",
+                "best_result_summary", "benchmark_result",
+                "placebo_result", "paper_trading_allowed",
+                "live_trading_allowed", "report_path",
+            ) if c in sb.columns]
+
+            def _row_style(row: pd.Series) -> List[str]:
+                v = str(row.get("verdict", "")).upper()
+                if v in ("FAIL", "INCONCLUSIVE", "UNKNOWN"):
+                    return ["background-color: #fee2e2"] * len(row)
+                if v == "WATCHLIST":
+                    return ["background-color: #fef3c7"] * len(row)
+                if v == "PASS":
+                    return ["background-color: #dcfce7"] * len(row)
+                return [""] * len(row)
+
+            try:
+                styled = sb[cols].style.apply(_row_style, axis=1)
+                st.dataframe(styled, use_container_width=True,
+                              hide_index=True, height=420)
+            except Exception:  # noqa: BLE001 — Streamlit version drift
+                st.dataframe(sb[cols], use_container_width=True,
+                              hide_index=True, height=420)
+            st.download_button(
+                "Download strategy_registry_snapshot.csv",
+                _df_to_csv_bytes(sb),
+                file_name="strategy_registry_snapshot.csv",
+                mime="text/csv", key="dl_rd_registry",
+            )
+
+    # ---------------- Archived timeline -------------------------------
+    with rd_tabs[2]:
+        tl = research_dashboard.archived_timeline_dataframe()
+        st.markdown(
+            f"<div class='section-sub'>"
+            f"<b>{len(tl)} archived branches.</b> Every entry has "
+            f"<code>merge_allowed=False</code>. None should be merged "
+            f"into <code>main</code>; they are decision evidence, not "
+            f"production code.</div>",
+            unsafe_allow_html=True,
+        )
+        st.dataframe(tl, use_container_width=True,
+                      hide_index=True, height=380)
+        with st.expander("Read a report inline"):
+            choice = st.selectbox(
+                "Pick an archived branch",
+                options=tl["branch"].tolist(),
+                key="rd_archived_pick",
+            )
+            sub = tl[tl["branch"] == choice]
+            if not sub.empty:
+                rp = str(sub.iloc[0]["report_path"])
+                st.markdown(research_dashboard.report_text(rp)
+                              or "(empty report)")
+
+    # ---------------- Baseline ----------------------------------------
+    with rd_tabs[3]:
+        st.markdown(
+            "**BTC buy-and-hold remains the production baseline.** "
+            "Long-only defensive strategies reduced drawdown but "
+            "repeatedly failed to beat BTC out of sample. The current "
+            "project should NOT open another free-data long-only branch "
+            "unless new data or a new strategy class is approved.",
+        )
+        bm = research_dashboard.baseline_metrics()
+        if not bm["available"]:
+            st.warning(
+                "No `equity_curve.csv` in `results/`. The baseline "
+                "table is empty — run a backtest or restore the cached "
+                "results to populate it.",
+            )
+        else:
+            cols_b = st.columns(4)
+            cols_b[0].metric("Starting capital",
+                                _fmt_money(bm["starting_capital"]))
+            cols_b[1].metric("Final value",
+                                _fmt_money(bm["final_value"]))
+            cols_b[2].metric("Total return",
+                                _fmt_pct(bm["total_return_pct"]))
+            cols_b[3].metric("Max drawdown",
+                                _fmt_pct(bm["max_drawdown_pct"]))
+            cols_v = st.columns(2)
+            cols_v[0].metric("Vol (annualised)",
+                                _fmt_pct(bm["vol_pct_annualised"],
+                                            signed=False))
+            cols_v[1].metric("Bars", f"{bm['n_bars']}")
+
+    # ---------------- Risk dashboard ----------------------------------
+    with rd_tabs[4]:
+        st.markdown(
+            "Risk reporting is what this project does next. The "
+            "table below shows which expected results files are present "
+            "and which are missing — so the user can see at a glance "
+            "what data is fresh.",
+        )
+        state = research_dashboard.latest_results_state()
+        if not state["results_dir_exists"]:
+            st.warning("`results/` directory does not exist.")
+        else:
+            cols_p = st.columns(2)
+            cols_p[0].metric("Files present",
+                                f"{len(state['files_present'])} / "
+                                f"{len(research_dashboard.RISK_RESULT_FILES)}")
+            cols_p[1].metric("Equity curve bars",
+                                f"{state['equity_n_bars']}")
+            cols_q = st.columns(2)
+            cols_q[0].metric(
+                "Equity first row",
+                state["equity_first_row"] or "(none)",
+            )
+            cols_q[1].metric(
+                "Freshness (days)",
+                (f"{state['equity_freshness_days']:.1f}"
+                 if state["equity_freshness_days"] is not None
+                 else "(none)"),
+            )
+            present_table = pd.DataFrame({
+                "expected_file": list(research_dashboard.RISK_RESULT_FILES),
+                "status": ["present"
+                            if f in state["files_present"]
+                            else "missing"
+                            for f in research_dashboard.RISK_RESULT_FILES],
+            })
+            st.dataframe(present_table, use_container_width=True,
+                          hide_index=True)
+
+    # ---------------- Safety + governance -----------------------------
+    with rd_tabs[5]:
+        exec_state = research_dashboard.executive_state()
+        st.markdown("**Safety status**")
+        cols_s = st.columns(3)
+        cols_s[0].metric("Lock status",
+                              exec_state["safety_lock_status"])
+        cols_s[1].metric("Execution",
+                              "blocked" if not
+                              exec_state["execution_allowed"] else
+                              "allowed")
+        cols_s[2].metric("Reasons blocked",
+                              f"{len(exec_state['reasons_blocked'])}")
+        for r in exec_state["reasons_blocked"]:
+            st.caption(f"  · {r}")
+
+        st.markdown("---")
+        st.markdown("**Decision journal — latest row**")
+        last_dj = research_dashboard.decision_journal_latest_row()
+        if last_dj is None:
+            st.caption("(no decision journal CSV in results/)")
+        else:
+            st.json(last_dj)
+
+        st.markdown("---")
+        st.markdown("**Alert history — latest 10 rows**")
+        ah = research_dashboard.alert_history_latest_rows(limit=10)
+        if ah.empty:
+            st.caption("(no alert history CSV in results/)")
+        else:
+            st.dataframe(ah, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("**Unlock procedure (for the record)**")
+        unlock_path = config.REPO_ROOT / "docs" / "unlock_procedure.md"
+        if unlock_path.exists():
+            try:
+                txt = unlock_path.read_text()
+                st.markdown(txt[:1200] + ("\n\n…" if len(txt) > 1200
+                                              else ""))
+            except OSError as exc:
+                st.error(f"unlock_procedure.md unreadable: {exc}")
+        else:
+            st.caption("docs/unlock_procedure.md missing.")
+
+    # ---------------- Next allowed actions ----------------------------
+    with rd_tabs[6]:
+        st.markdown("**Allowed next actions** (read-only research):")
+        for action in research_dashboard.ALLOWED_NEXT_ACTIONS:
+            st.markdown(f"- {action}")
+        st.markdown("---")
+        st.markdown("**Explicitly forbidden** on this dashboard:")
+        for forbidden in research_dashboard.FORBIDDEN_NEXT_ACTIONS:
+            st.markdown(f"- {forbidden}")
+        st.error(
+            "This dashboard does not expose any execution surface. "
+            "Paper trading, live trading, Kraken connection, API key "
+            "entry, and order placement are all out of scope.",
+        )
 
 
 # ---------------------------------------------------------------------------
