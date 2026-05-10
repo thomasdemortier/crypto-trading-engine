@@ -257,6 +257,33 @@ upstream Kronos repo are never committed.
   [`docs/research_dashboard.md`](docs/research_dashboard.md) for what
   the dashboard shows and what NOT to do with it.
 
+## Portfolio risk dashboard
+
+The engine can now be used to review portfolio exposure and drawdown
+scenario risk from a local **gitignored** CSV file. This is read-only.
+It does not place trades. It does not connect to brokers. It does not
+produce strategy signals.
+
+* Drop a local file at `data/portfolio_holdings.csv` (the path is
+  gitignored — never commit user financial data). Required columns:
+  `asset, quantity, average_cost, currency, current_price,
+  price_source, notes`.
+* Run `streamlit run streamlit_app.py` and scroll to the
+  **Portfolio Risk** section below the Research Dashboard.
+* The dashboard shows: schema status, position table, portfolio
+  summary, drawdown scenarios (-10 % / -20 % / -30 % / -50 %), BTC
+  baseline comparison, locked risk classification (LOW / MODERATE /
+  HIGH / EXTREME / UNKNOWN), and a non-trading recommendation
+  (`hold risk steady` / `review concentration` / `reduce
+  concentration` / `data missing` / `do nothing until data is
+  complete`).
+* The recommendation language is locked. The dashboard never says
+  "buy", "sell", "open position", "place order", or "connect broker"
+  — a unit test enforces this.
+
+See [`docs/portfolio_risk_dashboard.md`](docs/portfolio_risk_dashboard.md)
+for the CSV format, the locked thresholds, and the safety rules.
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.
