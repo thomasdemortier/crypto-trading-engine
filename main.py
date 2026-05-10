@@ -28,6 +28,11 @@ Usage:
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
     python main.py write_health_snapshot
+    python main.py portfolio_rebalancing_backtest
+    python main.py portfolio_rebalancing_walk_forward
+    python main.py portfolio_rebalancing_placebo
+    python main.py portfolio_rebalancing_scorecard
+    python main.py research_all_portfolio_rebalancing
 """
 
 from __future__ import annotations
@@ -43,8 +48,9 @@ from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
     dry_run_planner, health_snapshot, oos_audit, paper_trader,
-    performance, portfolio_audit, portfolio_research, research,
-    safety_lock, strategy_registry, system_health, utils,
+    performance, portfolio_audit, portfolio_rebalancing_research,
+    portfolio_research, research, safety_lock, strategy_registry,
+    system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -553,6 +559,119 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     sc = out.get("scorecard")
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
+        print(sc.to_string(index=False))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Strategy 10: portfolio rebalancing (locked-weight, monthly)
+# ---------------------------------------------------------------------------
+def cmd_portfolio_rebalancing_backtest(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = portfolio_rebalancing_research.run_portfolio_rebalancing_backtest(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"portfolio_rebalancing_backtest: {out.get('reason')}")
+        return 1
+    print("\n=== portfolio rebalancing vs benchmarks (full window) ===")
+    _print_portfolio_metrics_dict(
+        "portfolio_rebalancing_allocator", out["metrics"],
+    )
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/portfolio_rebalancing_*.csv")
+    return 0
+
+
+def cmd_portfolio_rebalancing_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_rebalancing_research.portfolio_rebalancing_walk_forward(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, max_windows=args.max_windows,
+    )
+    if df.empty:
+        print("portfolio_rebalancing_walk_forward: no rows produced.")
+        return 1
+    cols = [c for c in (
+        "window", "oos_start_iso", "oos_end_iso",
+        "oos_return_pct", "oos_max_drawdown_pct", "oos_sharpe",
+        "btc_return_pct", "btc_drawdown_pct", "btc_sharpe",
+        "n_rebalances", "sharpe_within_010", "drawdown_15pp_tighter",
+    ) if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/portfolio_rebalancing_walk_forward.csv "
+          f"({len(df)} windows).")
+    return 0
+
+
+def cmd_portfolio_rebalancing_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_rebalancing_research.portfolio_rebalancing_placebo(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("portfolio_rebalancing_placebo: no rows produced.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== portfolio rebalancing placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown",
+              "placebo_return_percentile",
+              "placebo_drawdown_percentile"):
+        if k in summary:
+            print(f"  {k:<40} {summary[k]}")
+    print(f"\nSaved → results/portfolio_rebalancing_placebo.csv "
+          f"({args.n_seeds} seeds).")
+    return 0
+
+
+def cmd_portfolio_rebalancing_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = portfolio_rebalancing_research.portfolio_rebalancing_scorecard()
+    if df.empty:
+        print("portfolio_rebalancing_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== portfolio rebalancing scorecard ===")
+    for k in ("strategy_name", "verdict",
+              "total_return", "btc_total_return",
+              "equal_weight_total_return",
+              "sharpe", "btc_sharpe",
+              "max_drawdown", "btc_max_drawdown",
+              "drawdown_improvement_pp",
+              "placebo_return_percentile",
+              "placebo_drawdown_percentile",
+              "rebalance_count",
+              "pass_sharpe_within_010",
+              "pass_drawdown_15pp_tighter",
+              "pass_beats_placebo_return",
+              "pass_beats_placebo_drawdown",
+              "pass_min_24_rebalances",
+              "notes"):
+        if k in row:
+            print(f"  {k:<35} {row[k]}")
+    print(f"\nSaved → results/portfolio_rebalancing_scorecard.csv")
+    return 0
+
+
+def cmd_research_all_portfolio_rebalancing(
+    args: argparse.Namespace,
+) -> int:
+    utils.assert_paper_only()
+    out = portfolio_rebalancing_research.run_all_portfolio_rebalancing(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, seeds=tuple(range(args.n_seeds)),
+        max_windows=args.max_windows,
+    )
+    sc = out.get("scorecard")
+    if sc is not None and not sc.empty:
+        print("\n=== portfolio rebalancing scorecard ===")
         print(sc.to_string(index=False))
     return 0
 
@@ -1145,6 +1264,65 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    # ----- Strategy 10: portfolio rebalancing (locked-weight, monthly)
+    pr_default_assets = ["BTC/USDT", "ETH/USDT"]
+    sp = sub.add_parser(
+        "portfolio_rebalancing_backtest",
+        help=("Single-window backtest of the locked-weight, monthly "
+              "portfolio rebalancing allocator vs benchmarks."),
+    )
+    sp.add_argument("--assets", nargs="+", default=pr_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.set_defaults(func=cmd_portfolio_rebalancing_backtest)
+
+    sp = sub.add_parser(
+        "portfolio_rebalancing_walk_forward",
+        help=("Walk-forward the portfolio rebalancing allocator "
+              "(14 OOS windows by default)."),
+    )
+    sp.add_argument("--assets", nargs="+", default=pr_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--max-windows", type=int, default=14,
+                    dest="max_windows")
+    sp.set_defaults(func=cmd_portfolio_rebalancing_walk_forward)
+
+    sp = sub.add_parser(
+        "portfolio_rebalancing_placebo",
+        help=("Compare the rebalancing allocator vs random "
+              "fixed-weight placebo across N seeds."),
+    )
+    sp.add_argument("--assets", nargs="+", default=pr_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_portfolio_rebalancing_placebo)
+
+    sp = sub.add_parser(
+        "portfolio_rebalancing_scorecard",
+        help=("Build the locked rebalancing-specific scorecard from "
+              "saved CSVs."),
+    )
+    sp.set_defaults(func=cmd_portfolio_rebalancing_scorecard)
+
+    sp = sub.add_parser(
+        "research_all_portfolio_rebalancing",
+        help=("Run the portfolio rebalancing allocator end to end: "
+              "backtest + walk-forward + placebo + scorecard."),
+    )
+    sp.add_argument("--assets", nargs="+", default=pr_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.add_argument("--max-windows", type=int, default=14,
+                    dest="max_windows")
+    sp.set_defaults(func=cmd_research_all_portfolio_rebalancing)
 
     sp = sub.add_parser(
         "bot_status",

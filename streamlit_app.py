@@ -1736,6 +1736,215 @@ with st.container(border=True):
 
 
 # ---------------------------------------------------------------------------
+# Portfolio Rebalancing Research — read-only verdict + scorecard surface
+# for the locked-weight (60/30/10 BTC/ETH/cash) monthly rebalancer.
+# Sits below Portfolio Risk. No execution surface.
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Portfolio Rebalancing Research</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Read-only verdict for the locked-weight, monthly portfolio "
+        "rebalancing allocator. Judged on Sharpe-within-0.10 of BTC + "
+        "drawdown ≥ 15 pp tighter + beats placebo on both axes + "
+        "≥ 24 rebalances — explicitly NOT 'beat BTC outright'. Run "
+        "<code>python main.py research_all_portfolio_rebalancing</code> "
+        "to populate."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    pr_strat_cmp = _research_csv("portfolio_rebalancing_comparison.csv")
+    pr_strat_wf = _research_csv("portfolio_rebalancing_walk_forward.csv")
+    pr_strat_plac = _research_csv("portfolio_rebalancing_placebo.csv")
+    pr_strat_sc = _research_csv("portfolio_rebalancing_scorecard.csv")
+
+    pr_strat_tabs = st.tabs([
+        "Verdict", "Config", "Backtest", "Walk-forward",
+        "Placebo", "Diagnostics",
+    ])
+
+    with pr_strat_tabs[0]:
+        if pr_strat_sc.empty:
+            st.info("No scorecard yet — run "
+                    "`python main.py research_all_portfolio_rebalancing`.")
+        else:
+            row = pr_strat_sc.iloc[0].to_dict()
+            verdict = str(row.get("verdict", "UNKNOWN")).upper()
+            color = {
+                "PASS": "#1f9d55", "WATCHLIST": "#f6993f",
+                "FAIL": "#e3342f", "INCONCLUSIVE": "#6b7280",
+            }.get(verdict, "#6b7280")
+            st.markdown(
+                f"<div style='padding:0.6rem 1rem; border-radius:8px; "
+                f"background:{color}22; border:1px solid {color}; "
+                f"color:{color}; font-weight:700; "
+                f"display:inline-block;'>{verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            cols_t = st.columns(4)
+            cols_t[0].metric("Total return",
+                              _fmt_pct(row.get("total_return")))
+            cols_t[1].metric("BTC b&h",
+                              _fmt_pct(row.get("btc_total_return")))
+            cols_t[2].metric("Sharpe",
+                              f"{row.get('sharpe', 0.0):.2f}")
+            cols_t[3].metric("BTC Sharpe",
+                              f"{row.get('btc_sharpe', 0.0):.2f}")
+            cols_b = st.columns(4)
+            cols_b[0].metric("Max drawdown",
+                              _fmt_pct(row.get("max_drawdown")))
+            cols_b[1].metric("BTC max drawdown",
+                              _fmt_pct(row.get("btc_max_drawdown")))
+            cols_b[2].metric("DD improvement (pp)",
+                              f"{row.get('drawdown_improvement_pp', 0.0):+.2f}")
+            cols_b[3].metric("Rebalances",
+                              f"{int(row.get('rebalance_count', 0))}")
+            cols_g = st.columns(5)
+            cols_g[0].metric("Sharpe ≤ 0.10 gap",
+                              "yes" if bool(row.get(
+                                  "pass_sharpe_within_010", False))
+                              else "no")
+            cols_g[1].metric("DD ≥ 15 pp tighter",
+                              "yes" if bool(row.get(
+                                  "pass_drawdown_15pp_tighter", False))
+                              else "no")
+            cols_g[2].metric("Beats placebo return",
+                              "yes" if bool(row.get(
+                                  "pass_beats_placebo_return", False))
+                              else "no")
+            cols_g[3].metric("Beats placebo DD",
+                              "yes" if bool(row.get(
+                                  "pass_beats_placebo_drawdown", False))
+                              else "no")
+            cols_g[4].metric("≥ 24 rebalances",
+                              "yes" if bool(row.get(
+                                  "pass_min_24_rebalances", False))
+                              else "no")
+            st.caption(str(row.get("notes", "")))
+            if verdict == "PASS":
+                st.success(
+                    "PASS on the locked rebalancing-specific gates. "
+                    "Independent review required before any trading. "
+                    "Execution remains locked.",
+                )
+            elif verdict == "FAIL":
+                st.error(
+                    "Strategy failed the locked rebalancing scorecard. "
+                    "Archive — do not merge as a live strategy. "
+                    "Execution remains locked.",
+                )
+            elif verdict == "INCONCLUSIVE":
+                st.warning(str(row.get("notes", "")))
+
+    with pr_strat_tabs[1]:
+        st.markdown(
+            "**Locked configuration** (never tuned after seeing "
+            "results):",
+        )
+        st.markdown(
+            "- BTC/USDT weight: **0.60**  \n"
+            "- ETH/USDT weight: **0.30**  \n"
+            "- Cash bucket: **0.10**  \n"
+            "- Rebalance frequency: **monthly**  \n"
+            "- Long-only, no leverage, no shorting, lookahead-free",
+        )
+
+    with pr_strat_tabs[2]:
+        if pr_strat_cmp.empty:
+            st.info("No comparison CSV — run "
+                    "`portfolio_rebalancing_backtest`.")
+        else:
+            cols = [c for c in (
+                "strategy", "total_return_pct",
+                "max_drawdown_pct", "sharpe_ratio",
+                "exposure_time_pct",
+            ) if c in pr_strat_cmp.columns]
+            st.dataframe(pr_strat_cmp[cols], use_container_width=True,
+                          hide_index=True)
+            st.download_button(
+                "Download portfolio_rebalancing_comparison.csv",
+                _df_to_csv_bytes(pr_strat_cmp),
+                file_name="portfolio_rebalancing_comparison.csv",
+                mime="text/csv", key="dl_pr_strat_cmp",
+            )
+
+    with pr_strat_tabs[3]:
+        if pr_strat_wf.empty:
+            st.info("No walk-forward yet.")
+        else:
+            cols = [c for c in (
+                "window", "oos_start_iso", "oos_end_iso",
+                "oos_return_pct", "oos_max_drawdown_pct", "oos_sharpe",
+                "btc_return_pct", "btc_drawdown_pct", "btc_sharpe",
+                "n_rebalances", "sharpe_within_010",
+                "drawdown_15pp_tighter",
+            ) if c in pr_strat_wf.columns]
+            st.dataframe(pr_strat_wf[cols], use_container_width=True,
+                          hide_index=True, height=420)
+
+    with pr_strat_tabs[4]:
+        if pr_strat_plac.empty:
+            st.info("No placebo yet.")
+        else:
+            summary = pr_strat_plac.iloc[0].to_dict()
+            cols_l = st.columns(4)
+            cols_l[0].metric("Strategy return",
+                              _fmt_pct(summary.get("strategy_return_pct")))
+            cols_l[1].metric("Placebo median return",
+                              _fmt_pct(summary.get(
+                                  "placebo_median_return_pct")))
+            cols_l[2].metric("Strategy DD",
+                              _fmt_pct(summary.get(
+                                  "strategy_max_drawdown_pct")))
+            cols_l[3].metric("Placebo median DD",
+                              _fmt_pct(summary.get(
+                                  "placebo_median_drawdown_pct")))
+            cols_q = st.columns(2)
+            cols_q[0].metric("Return percentile",
+                              _fmt_pct(summary.get(
+                                  "placebo_return_percentile"),
+                                  signed=False))
+            cols_q[1].metric("Drawdown percentile",
+                              _fmt_pct(summary.get(
+                                  "placebo_drawdown_percentile"),
+                                  signed=False))
+            seeds = (pr_strat_plac[pr_strat_plac["strategy"]
+                                       == "placebo_seed_runs"]
+                       if "strategy" in pr_strat_plac.columns
+                       else pr_strat_plac)
+            st.dataframe(seeds, use_container_width=True,
+                          hide_index=True, height=320)
+
+    with pr_strat_tabs[5]:
+        st.markdown(
+            "**Locked PASS criteria** (every gate must clear):",
+        )
+        st.markdown(
+            "1. Sharpe within 0.10 of BTC b&h  \n"
+            "2. Max drawdown ≥ 15 pp tighter than BTC b&h  \n"
+            "3. Beats placebo MEDIAN return  \n"
+            "4. Beats placebo MEDIAN drawdown  \n"
+            "5. ≥ 24 rebalances total across walk-forward windows",
+        )
+        st.caption(
+            "Notice that 'beat BTC outright on return' is NOT a "
+            "criterion. That is the bar that exhausted every prior "
+            "long-only allocator. A fixed-weight rebalancer is judged "
+            "on risk-adjusted metrics instead.",
+        )
+        st.error(
+            "Even on PASS, this dashboard does NOT enable trading. "
+            "Paper trading and live trading remain locked at the "
+            "registry and safety_lock layers.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Health Timeline — read-only history of safety / system / strategy /
 # portfolio state. Snapshots are appended by the CLI command:
 #     python main.py write_health_snapshot

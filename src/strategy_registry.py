@@ -100,6 +100,15 @@ _FAMILIES: List[_FamilyMeta] = [
         headline=("Fear & Greed overlay on the prior-best vol-target "
                    "allocator"),
     ),
+    _FamilyMeta(
+        family="portfolio_rebalancing",
+        branch="research/portfolio-rebalancing-strategy-v1",
+        report_path="reports/portfolio_rebalancing_report.md",
+        scorecard_files=("portfolio_rebalancing_scorecard.csv",),
+        headline=("Locked-weight (60/30/10 BTC/ETH/cash) monthly "
+                   "rebalancing — judged on Sharpe-within-0.10 + "
+                   "drawdown ≥ 15 pp tighter, NOT raw return vs BTC"),
+    ),
 ]
 
 
