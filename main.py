@@ -30,6 +30,7 @@ Usage:
     python main.py write_health_snapshot
     python main.py audit_fx_crypto_sources
     python main.py build_fx_dataset
+    python main.py check_fx_data_quality
 """
 
 from __future__ import annotations
@@ -44,10 +45,10 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, fx_crypto_source_audit, fx_research_dataset,
-    health_snapshot, oos_audit, paper_trader, performance, portfolio_audit,
-    portfolio_research, research, safety_lock, strategy_registry,
-    system_health, utils,
+    dry_run_planner, fx_crypto_source_audit, fx_data_quality,
+    fx_research_dataset, health_snapshot, oos_audit, paper_trader,
+    performance, portfolio_audit, portfolio_research, research,
+    safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -637,6 +638,45 @@ def cmd_build_fx_dataset(args: argparse.Namespace) -> int:
         print(f"Parquet engine unavailable: {written['parquet_error']}")
     if "csv" in written:
         print(f"Saved → {written['csv']}")
+    return 0
+
+
+def cmd_check_fx_data_quality(args: argparse.Namespace) -> int:
+    """Read-only quality checks against `data/fx/fx_daily_v1.parquet`.
+    No network, no broker, no API keys, no execution. Writes
+    `results/fx_data_quality_report.csv` (gitignored). Exits 0 on
+    PASS / WARNING, 1 on FAIL, 2 on INCONCLUSIVE (dataset missing)."""
+    utils.assert_paper_only()
+    report = fx_data_quality.run_fx_data_quality_checks()
+    written = fx_data_quality.write_fx_data_quality_report(report)
+    print("\n=== FX data quality v1 ===")
+    print(f"  verdict             : {report.verdict}")
+    print(f"  rows                : {report.summary.get('rows', 0)}")
+    print(f"  dataset path        : {report.summary.get('path', '')}")
+    print()
+    print("  per-check results:")
+    for r in report.checks:
+        print(f"    [{r.status:<12}] {r.name:<22} — {r.message}")
+    cov = report.summary.get("asset_coverage", {}) or {}
+    if cov:
+        print()
+        print("  per-asset coverage:")
+        for asset in sorted(cov):
+            row = cov[asset]
+            kind = "derived" if row.get("is_derived") else "direct"
+            print(f"    {asset:<10} src={row.get('source', ''):<13} "
+                  f"{kind:<7} rows={row['rows']:<6} "
+                  f"{row['start_date']} → {row['end_date']} "
+                  f"({row['coverage_days']}d)")
+    print()
+    if "csv" in written:
+        print(f"Saved → {written['csv']}")
+    if "json" in written:
+        print(f"Saved → {written['json']}")
+    if report.verdict == fx_data_quality.FAIL:
+        return 1
+    if report.verdict == fx_data_quality.INCONCLUSIVE:
+        return 2
     return 0
 
 
@@ -1244,6 +1284,14 @@ def build_parser() -> argparse.ArgumentParser:
               "(gitignored). No broker, no execution, no API keys."),
     )
     sp.set_defaults(func=cmd_build_fx_dataset)
+
+    sp = sub.add_parser(
+        "check_fx_data_quality",
+        help=("Run read-only data-quality checks on the v1 FX dataset. "
+              "Writes results/fx_data_quality_report.csv (gitignored). "
+              "No broker, no execution, no API keys."),
+    )
+    sp.set_defaults(func=cmd_check_fx_data_quality)
 
     sp = sub.add_parser(
         "bot_status",
