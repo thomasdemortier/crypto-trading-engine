@@ -27,6 +27,13 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py download_funding_basis_data
+    python main.py funding_basis_signals
+    python main.py funding_basis_backtest
+    python main.py funding_basis_walk_forward
+    python main.py funding_basis_placebo
+    python main.py funding_basis_scorecard
+    python main.py research_all_funding_basis
 """
 
 from __future__ import annotations
@@ -41,7 +48,8 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, oos_audit, paper_trader, performance,
+    dry_run_planner, funding_basis_data_collector, funding_basis_research,
+    funding_basis_signals, oos_audit, paper_trader, performance,
     portfolio_audit, portfolio_research, research, safety_lock,
     strategy_registry, system_health, utils,
 )
@@ -552,6 +560,142 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     sc = out.get("scorecard")
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
+        print(sc.to_string(index=False))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Strategy 6: funding + basis carry allocator (research-only)
+# ---------------------------------------------------------------------------
+def cmd_download_funding_basis_data(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    cov = funding_basis_data_collector.download_all(
+        assets=tuple(args.assets), save=True,
+    )
+    if cov.empty:
+        print("download_funding_basis_data: no rows produced.")
+        return 1
+    cols = [c for c in ("source", "asset", "dataset", "verdict",
+                          "row_count", "coverage_days", "granularity",
+                          "notes") if c in cov.columns]
+    print("\n=== funding/basis data coverage ===")
+    print(cov[cols].to_string(index=False))
+    print(f"\nSaved → results/funding_basis_data_coverage.csv")
+    return 0
+
+
+def cmd_funding_basis_signals(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_basis_signals.compute_signals(
+        assets=tuple(args.assets), timeframe=args.timeframe, save=True,
+    )
+    if df.empty:
+        print("funding_basis_signals: no rows produced.")
+        return 1
+    dist = funding_basis_signals.regime_distribution(df)
+    print(f"\nfunding_basis_signals: {len(df)} rows across "
+          f"{df['asset'].nunique()} asset(s).")
+    print(f"  span: {df['datetime'].iloc[0]} -> {df['datetime'].iloc[-1]}")
+    print(f"  regime mix (avg across assets): "
+          f"{ {k: round(v, 3) for k, v in dist.items()} }")
+    print("\nSaved → results/funding_basis_signals.csv")
+    return 0
+
+
+def cmd_funding_basis_backtest(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = funding_basis_research.run_funding_basis_backtest(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"funding_basis_backtest: {out.get('reason')}")
+        return 1
+    print("\n=== funding+basis vs benchmarks (full window) ===")
+    _print_portfolio_metrics_dict(
+        "funding_basis_carry_allocator", out["metrics"],
+    )
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/funding_basis_*.csv")
+    return 0
+
+
+def cmd_funding_basis_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_basis_research.funding_basis_walk_forward(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, max_windows=args.max_windows,
+    )
+    if df.empty:
+        print("funding_basis_walk_forward: no rows produced.")
+        return 1
+    cols = [c for c in ("window", "oos_start_iso", "oos_end_iso",
+            "oos_return_pct", "btc_oos_return_pct", "eth_oos_return_pct",
+            "basket_oos_return_pct", "simple_oos_return_pct",
+            "beats_btc", "beats_basket", "beats_simple_momentum",
+            "n_rebalances") if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/funding_basis_walk_forward.csv "
+          f"({len(df)} windows).")
+    return 0
+
+
+def cmd_funding_basis_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_basis_research.funding_basis_placebo(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("funding_basis_placebo: no rows produced.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== funding+basis placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown"):
+        if k in summary:
+            print(f"  {k:<40} {summary[k]}")
+    print(f"\nSaved → results/funding_basis_placebo.csv "
+          f"({args.n_seeds} seeds).")
+    return 0
+
+
+def cmd_funding_basis_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = funding_basis_research.funding_basis_scorecard()
+    if df.empty:
+        print("funding_basis_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== funding+basis scorecard ===")
+    for k in ("strategy_name", "n_windows", "verdict",
+              "avg_oos_return_pct", "avg_oos_drawdown_pct",
+              "pct_windows_beat_btc", "pct_windows_beat_eth",
+              "pct_windows_beat_basket",
+              "pct_windows_beat_simple_momentum",
+              "stability_score_pct", "total_rebalances",
+              "beats_placebo_median", "checks_passed",
+              "checks_total", "coverage_note", "reason"):
+        if k in row:
+            print(f"  {k:<35} {row[k]}")
+    print(f"\nSaved → results/funding_basis_scorecard.csv")
+    return 0
+
+
+def cmd_research_all_funding_basis(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = funding_basis_research.run_all_funding_basis(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, seeds=tuple(range(args.n_seeds)),
+        max_windows=args.max_windows,
+    )
+    sc = out.get("scorecard")
+    if sc is not None and not sc.empty:
+        print("\n=== funding+basis scorecard ===")
         print(sc.to_string(index=False))
     return 0
 
@@ -1119,6 +1263,82 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    # ----- Strategy 6: funding + basis carry allocator ---------------------
+    fb_default_assets = ["BTC/USDT", "ETH/USDT"]
+    sp = sub.add_parser(
+        "download_funding_basis_data",
+        help=("Download funding-rate + futures-basis data from public "
+              "endpoints (Binance, Bybit, Deribit). Read-only. Writes "
+              "results/funding_basis_data_coverage.csv."),
+    )
+    sp.add_argument("--assets", nargs="+", default=fb_default_assets)
+    sp.set_defaults(func=cmd_download_funding_basis_data)
+
+    sp = sub.add_parser(
+        "funding_basis_signals",
+        help=("Build the per-asset daily signal frame (funding + basis "
+              "+ regime state). Reads the persisted positioning CSVs."),
+    )
+    sp.add_argument("--assets", nargs="+", default=fb_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.set_defaults(func=cmd_funding_basis_signals)
+
+    sp = sub.add_parser(
+        "funding_basis_backtest",
+        help=("Single-window backtest of the funding+basis carry "
+              "allocator vs benchmarks."),
+    )
+    sp.add_argument("--assets", nargs="+", default=fb_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.set_defaults(func=cmd_funding_basis_backtest)
+
+    sp = sub.add_parser(
+        "funding_basis_walk_forward",
+        help=("Walk-forward the funding+basis carry allocator (14 OOS "
+              "windows by default)."),
+    )
+    sp.add_argument("--assets", nargs="+", default=fb_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--max-windows", type=int, default=14,
+                    dest="max_windows")
+    sp.set_defaults(func=cmd_funding_basis_walk_forward)
+
+    sp = sub.add_parser(
+        "funding_basis_placebo",
+        help=("Compare funding+basis carry allocator vs random-bucket "
+              "placebo across N seeds."),
+    )
+    sp.add_argument("--assets", nargs="+", default=fb_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_funding_basis_placebo)
+
+    sp = sub.add_parser(
+        "funding_basis_scorecard",
+        help=("Build the funding+basis scorecard from saved CSVs."),
+    )
+    sp.set_defaults(func=cmd_funding_basis_scorecard)
+
+    sp = sub.add_parser(
+        "research_all_funding_basis",
+        help=("Run the funding+basis carry allocator end to end: "
+              "signals + backtest + walk-forward + placebo + scorecard."),
+    )
+    sp.add_argument("--assets", nargs="+", default=fb_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.add_argument("--max-windows", type=int, default=14,
+                    dest="max_windows")
+    sp.set_defaults(func=cmd_research_all_funding_basis)
 
     sp = sub.add_parser(
         "bot_status",

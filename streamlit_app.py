@@ -3165,6 +3165,217 @@ with st.expander("Debug & audit", expanded=False):
 
 
 # ---------------------------------------------------------------------------
+# Strategy 6: Funding + basis carry allocator (research-only)
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Funding + basis carry allocator (research)</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Long-only BTC/ETH allocator that combines funding-rate "
+        "regimes with futures-spot basis. Run "
+        "<code>python main.py research_all_funding_basis</code> to "
+        "populate. Research only — execution remains locked.</div>",
+        unsafe_allow_html=True,
+    )
+
+    fb_tabs = st.tabs([
+        "Coverage", "Signals / regimes", "Current state",
+        "Equity vs benchmarks", "Walk-forward", "Placebo",
+        "Scorecard", "Diagnostics",
+    ])
+
+    fb_cov = _research_csv("funding_basis_data_coverage.csv")
+    fb_sig = _research_csv("funding_basis_signals.csv")
+    fb_cmp = _research_csv("funding_basis_comparison.csv")
+    fb_wf = _research_csv("funding_basis_walk_forward.csv")
+    fb_plac = _research_csv("funding_basis_placebo.csv")
+    fb_sc = _research_csv("funding_basis_scorecard.csv")
+    fb_diag = _research_csv("funding_basis_diagnostics.csv")
+
+    with fb_tabs[0]:
+        if fb_cov.empty:
+            st.info("No coverage CSV yet — run "
+                    "`python main.py download_funding_basis_data`.")
+        else:
+            cols = [c for c in ("source", "asset", "dataset", "verdict",
+                                "row_count", "coverage_days",
+                                "granularity", "gap_count", "notes")
+                    if c in fb_cov.columns]
+            st.dataframe(fb_cov[cols], use_container_width=True,
+                          hide_index=True, height=320)
+            st.download_button(
+                "Download funding_basis_data_coverage.csv",
+                _df_to_csv_bytes(fb_cov),
+                file_name="funding_basis_data_coverage.csv",
+                mime="text/csv", key="dl_fb_cov",
+            )
+
+    with fb_tabs[1]:
+        if fb_sig.empty:
+            st.info("No signals yet — run `funding_basis_signals`.")
+        else:
+            assets = sorted(fb_sig["asset"].unique().tolist()) \
+                if "asset" in fb_sig.columns else []
+            if assets:
+                pick = st.selectbox("Asset", assets, key="fb_sig_pick")
+                sub = fb_sig[fb_sig["asset"] == pick]
+                cols = [c for c in ("datetime", "close",
+                                    "funding_1d_avg", "funding_z90",
+                                    "basis", "basis_z90",
+                                    "above_200dma", "carry_attractiveness",
+                                    "regime_state") if c in sub.columns]
+                st.dataframe(sub[cols].tail(60),
+                              use_container_width=True,
+                              hide_index=True, height=420)
+                # Regime distribution chart per asset.
+                rg = (sub["regime_state"].value_counts(normalize=True)
+                        .rename_axis("regime").reset_index(name="pct"))
+                st.bar_chart(rg.set_index("regime"))
+
+    with fb_tabs[2]:
+        if fb_sig.empty:
+            st.info("No signals yet.")
+        else:
+            latest = (fb_sig.sort_values("timestamp")
+                              .groupby("asset", as_index=False).tail(1))
+            cols = [c for c in ("asset", "datetime", "close",
+                                "regime_state", "funding_z90",
+                                "basis_z90", "above_200dma",
+                                "carry_attractiveness", "crowding_score")
+                    if c in latest.columns]
+            st.dataframe(latest[cols], use_container_width=True,
+                          hide_index=True)
+
+    with fb_tabs[3]:
+        if fb_cmp.empty:
+            st.info("No comparison CSV — run `funding_basis_backtest`.")
+        else:
+            cols = [c for c in ("strategy", "total_return_pct",
+                                "max_drawdown_pct", "sharpe_ratio",
+                                "exposure_time_pct") if c in fb_cmp.columns]
+            st.dataframe(fb_cmp[cols], use_container_width=True,
+                          hide_index=True)
+            st.download_button(
+                "Download funding_basis_comparison.csv",
+                _df_to_csv_bytes(fb_cmp),
+                file_name="funding_basis_comparison.csv",
+                mime="text/csv", key="dl_fb_cmp",
+            )
+
+    with fb_tabs[4]:
+        if fb_wf.empty:
+            st.info("No walk-forward yet.")
+        else:
+            cols = [c for c in ("window", "oos_start_iso", "oos_end_iso",
+                                "oos_return_pct", "btc_oos_return_pct",
+                                "eth_oos_return_pct",
+                                "basket_oos_return_pct",
+                                "simple_oos_return_pct",
+                                "beats_btc", "beats_basket",
+                                "beats_simple_momentum",
+                                "n_rebalances", "oos_max_drawdown_pct")
+                    if c in fb_wf.columns]
+            st.dataframe(fb_wf[cols], use_container_width=True,
+                          hide_index=True, height=420)
+            st.download_button(
+                "Download funding_basis_walk_forward.csv",
+                _df_to_csv_bytes(fb_wf),
+                file_name="funding_basis_walk_forward.csv",
+                mime="text/csv", key="dl_fb_wf",
+            )
+
+    with fb_tabs[5]:
+        if fb_plac.empty:
+            st.info("No placebo yet.")
+        else:
+            summary = fb_plac.iloc[0].to_dict()
+            cols_l = st.columns(4)
+            cols_l[0].metric("Strategy return",
+                              _fmt_pct(summary.get("strategy_return_pct")))
+            cols_l[1].metric("Placebo median return",
+                              _fmt_pct(summary.get(
+                                  "placebo_median_return_pct")))
+            cols_l[2].metric("Strategy DD",
+                              _fmt_pct(summary.get(
+                                  "strategy_max_drawdown_pct")))
+            cols_l[3].metric("Placebo median DD",
+                              _fmt_pct(summary.get(
+                                  "placebo_median_drawdown_pct")))
+            seeds = (fb_plac[fb_plac["strategy"] == "placebo_seed_runs"]
+                       if "strategy" in fb_plac.columns else fb_plac)
+            st.dataframe(seeds, use_container_width=True,
+                          hide_index=True, height=320)
+
+    with fb_tabs[6]:
+        if fb_sc.empty:
+            st.info("No scorecard — run `funding_basis_scorecard`.")
+        else:
+            row = fb_sc.iloc[0].to_dict()
+            verdict = str(row.get("verdict", "UNKNOWN")).upper()
+            color = {
+                "PASS": "#1f9d55", "WATCHLIST": "#f6993f",
+                "FAIL": "#e3342f", "INCONCLUSIVE": "#6b7280",
+            }.get(verdict, "#6b7280")
+            st.markdown(
+                f"<div style='padding:0.6rem 1rem; border-radius:8px; "
+                f"background:{color}22; border:1px solid {color}; "
+                f"color:{color}; font-weight:700; display:inline-block;'>"
+                f"{verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            cols_t = st.columns(4)
+            cols_t[0].metric("Checks passed",
+                              f"{int(row.get('checks_passed', 0))}/"
+                              f"{int(row.get('checks_total', 0))}")
+            cols_t[1].metric("OOS beat BTC",
+                              _fmt_pct(row.get("pct_windows_beat_btc"),
+                                         signed=False))
+            cols_t[2].metric("OOS beat basket",
+                              _fmt_pct(row.get("pct_windows_beat_basket"),
+                                         signed=False))
+            cols_t[3].metric("Stability",
+                              _fmt_pct(row.get("stability_score_pct"),
+                                         signed=False))
+            cols_b = st.columns(4)
+            cols_b[0].metric("Full return",
+                              _fmt_pct(row.get("strategy_full_return_pct")))
+            cols_b[1].metric("Full DD",
+                              _fmt_pct(row.get("strategy_full_drawdown_pct")))
+            cols_b[2].metric("BTC DD",
+                              _fmt_pct(row.get("btc_full_drawdown_pct")))
+            cols_b[3].metric("Rebalances",
+                              f"{int(row.get('total_rebalances', 0))}")
+            if verdict == "FAIL":
+                st.error("Strategy failed the locked scorecard. Reason: "
+                          + str(row.get("reason", "")))
+            elif verdict == "INCONCLUSIVE":
+                st.warning("Inconclusive: data coverage or rebalance "
+                           "count below the bar. "
+                           + str(row.get("coverage_note", "")))
+            elif verdict == "PASS":
+                st.success("PASS — independent review required before "
+                            "any trading.")
+            else:
+                st.info(str(row.get("reason", "")))
+
+    with fb_tabs[7]:
+        if fb_diag.empty:
+            st.info("No diagnostics yet.")
+        else:
+            cols = [c for c in ("asof_ts_ms", "asset", "regime_state",
+                                "funding_z90", "basis_z90",
+                                "above_200dma", "carry_attractiveness",
+                                "weight") if c in fb_diag.columns]
+            st.dataframe(fb_diag[cols].tail(60),
+                          use_container_width=True,
+                          hide_index=True, height=420)
+
+
+# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 st.markdown(

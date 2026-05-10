@@ -229,6 +229,53 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Branch experiment: funding + basis carry allocator
+
+Branch `research/strategy-6-funding-basis-carry` is **research only**.
+
+* No strategy is enabled for trading.
+* No broker integration; no API keys; no order placement.
+* No Kraken connection.
+* Paper trading remains disabled.
+* Execution remains locked.
+
+The strategy is a long-only BTC + ETH allocator that combines:
+
+* **Funding-rate regimes** — daily-resampled mean of free public 8h
+  funding from Binance + Bybit + Deribit, with a 90-day z-score and
+  365-day percentile rank.
+* **Futures basis** — derived from Binance mark vs. index daily
+  klines as `(mark - index) / index`, also z-scored on a 90-day window.
+* **Trend health** — close vs. 200-day moving average plus 30/90-day
+  return.
+
+Per-asset state drives a per-asset weight cap:
+
+| State | Cap |
+| --- | --- |
+| `cheap_bullish` | 0.80 |
+| `neutral_risk_on` | 0.70 |
+| `crowded_long` | 0.30 |
+| `stress_negative_funding` | 0.00 |
+| `defensive` | 0.00 |
+| `unknown` | 0.00 |
+
+All thresholds are locked in `FundingBasisSignalConfig` and
+`FundingBasisCarryConfig`; **none** were tuned after seeing results.
+The honest verdict, walk-forward outcome, and recommended next step
+are in
+[`reports/funding_basis_carry_report.md`](reports/funding_basis_carry_report.md).
+
+Run it locally:
+
+```bash
+python main.py download_funding_basis_data
+python main.py research_all_funding_basis
+```
+
+The downloaded funding/basis CSVs live in `data/positioning/...` and
+are gitignored (see `.gitignore`).
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.

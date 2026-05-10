@@ -84,6 +84,14 @@ _FAMILIES: List[_FamilyMeta] = [
                    "(INCONCLUSIVE on data length)"),
     ),
     _FamilyMeta(
+        family="funding_basis_carry",
+        branch="research/strategy-6-funding-basis-carry",
+        report_path="reports/funding_basis_carry_report.md",
+        scorecard_files=("funding_basis_scorecard.csv",),
+        headline=("Funding-rate + futures-basis carry / crowding "
+                   "allocator (BTC + ETH, weekly rebalance)"),
+    ),
+    _FamilyMeta(
         family="market_structure",
         branch="research/strategy-2-market-structure",
         report_path="reports/market_structure_vol_target_report.md",
