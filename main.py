@@ -27,6 +27,7 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py audit_free_open_data
 """
 
 from __future__ import annotations
@@ -41,9 +42,9 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, oos_audit, paper_trader, performance,
-    portfolio_audit, portfolio_research, research, safety_lock,
-    strategy_registry, system_health, utils,
+    dry_run_planner, free_open_data_reaudit, oos_audit, paper_trader,
+    performance, portfolio_audit, portfolio_research, research,
+    safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -553,6 +554,44 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
         print(sc.to_string(index=False))
+    return 0
+
+
+def cmd_audit_free_open_data(args: argparse.Namespace) -> int:
+    """Re-audit only free / open public crypto data sources to see if
+    the free public stack still offers multi-year depth that justifies
+    another strategy branch. No API keys, no broker integration, no
+    paid plans. Writes results/free_open_data_reaudit.csv."""
+    utils.assert_paper_only()
+    df = free_open_data_reaudit.run_audit(save=True)
+    summary = free_open_data_reaudit.summarise(df)
+    print("\n=== free / open data re-audit ===")
+    print(f"  rows                       : {summary['n']}")
+    print(f"  PASS                       : {summary['pass']}")
+    print(f"  WARNING                    : {summary['warning']}")
+    print(f"  FAIL                       : {summary['fail']}")
+    print(f"  INCONCLUSIVE               : {summary['inconclusive']}")
+    print(f"  useful PASS field types    : "
+          f"{summary['useful_pass_field_types']}")
+    print(f"  useful WARNING field types : "
+          f"{summary['useful_warning_field_types']}")
+    verdict = summary["verdict"]
+    if verdict == "GO":
+        print("  Verdict: GO — multi-year depth exists in the free "
+              "public stack for >=2 useful field types beyond OHLCV "
+              "+ basic funding.")
+    elif verdict == "WARNING":
+        print("  Verdict: WARNING — useful fields exist but most are "
+              "below the 1460-day PASS bar.")
+    else:
+        print("  Verdict: NO_GO — free public stack adds no meaningful "
+              "new multi-year data beyond what already failed.")
+    cols = [c for c in ("source", "dataset", "asset", "field_type",
+                          "coverage_days", "decision_status", "notes")
+            if c in df.columns]
+    print()
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/free_open_data_reaudit.csv")
     return 0
 
 
@@ -1119,6 +1158,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    sp = sub.add_parser(
+        "audit_free_open_data",
+        help=("Re-audit only free / open public crypto data sources "
+              "(Binance, Bybit, OKX, Deribit, Kraken, Alternative.me, "
+              "DefiLlama, Blockchain.com, CoinGecko free, "
+              "CoinPaprika). No API keys, no paid plans. Writes "
+              "results/free_open_data_reaudit.csv."),
+    )
+    sp.set_defaults(func=cmd_audit_free_open_data)
 
     sp = sub.add_parser(
         "bot_status",

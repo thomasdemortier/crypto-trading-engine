@@ -229,6 +229,48 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Branch experiment: free / open data re-audit
+
+Branch `research/strategy-9-free-open-data-reaudit` is a **free /
+open data audit only**.
+
+* No strategy was built.
+* No backtest was run.
+* No broker integration; **no API keys**; no paid plans; no order
+  placement.
+* No Kraken connection.
+* Paper trading remains disabled.
+* Execution remains locked.
+* No scraping or ToS bypasses; we hit only documented public
+  endpoints.
+
+Purpose: after the CoinGlass keyed-audit branch was paused (we have no
+key), re-verify every free / open public source one more time and
+decide whether the FREE stack alone — Binance / Bybit / OKX / Deribit
+/ Kraken public, plus Alternative.me, DefiLlama, Blockchain.com,
+CoinGecko free, CoinPaprika — adds enough new multi-year depth to
+justify another strategy branch.
+
+Decision rule (locked, never tuned):
+
+* **GO** if the free stack provides at least 2 useful multi-year
+  field types BEYOND vanilla OHLCV + basic funding.
+* **WARNING** if useful fields exist but are mostly capped < 1460
+  days.
+* **NO_GO** otherwise — accept BTC buy-and-hold as the baseline; use
+  the engine for risk reporting, dashboarding, and research
+  falsification.
+
+Run it locally:
+
+```bash
+python main.py audit_free_open_data
+```
+
+The output CSV at `results/free_open_data_reaudit.csv` is generated,
+not tracked. The honest verdict is in
+[`reports/free_open_data_reaudit_report.md`](reports/free_open_data_reaudit_report.md).
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.
