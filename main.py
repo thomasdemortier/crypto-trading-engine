@@ -29,6 +29,7 @@ Usage:
     python main.py research_all_portfolio
     python main.py write_health_snapshot
     python main.py audit_fx_crypto_sources
+    python main.py build_fx_dataset
 """
 
 from __future__ import annotations
@@ -43,9 +44,10 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, fx_crypto_source_audit, health_snapshot, oos_audit,
-    paper_trader, performance, portfolio_audit, portfolio_research,
-    research, safety_lock, strategy_registry, system_health, utils,
+    dry_run_planner, fx_crypto_source_audit, fx_research_dataset,
+    health_snapshot, oos_audit, paper_trader, performance, portfolio_audit,
+    portfolio_research, research, safety_lock, strategy_registry,
+    system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -589,6 +591,52 @@ def cmd_audit_fx_crypto_sources(args: argparse.Namespace) -> int:
     print()
     print(df[cols].to_string(index=False))
     print(f"\nSaved → results/fx_crypto_source_audit.csv")
+    return 0
+
+
+def cmd_build_fx_dataset(args: argparse.Namespace) -> int:
+    """Build the v1 FX research dataset from public, no-key sources
+    (ECB SDMX + LBMA gold fix) and derive USD/JPY, USD/CHF, GBP/USD
+    via EUR crosses. No API keys, no broker, no execution. Writes
+    data/fx/fx_daily_v1.parquet (and a companion CSV) — both
+    gitignored. Network failures degrade to `missing` rows + warnings."""
+    utils.assert_paper_only()
+    df, summary = fx_research_dataset.build_and_write()
+    print("\n=== FX research dataset v1 ===")
+    print(f"  rows                : {summary['row_count']}")
+    print(f"  assets              : {summary['asset_count']}")
+    print(f"  start_date          : {summary['start_date']}")
+    print(f"  end_date            : {summary['end_date']}")
+    print(f"  coverage_days       : {summary['coverage_days']}")
+    print(f"  missing_value_count : {summary['missing_value_count']}")
+    print(f"  assets_available    : {summary['assets_available']}")
+    print(f"  assets_missing      : {summary['assets_missing']}")
+    print()
+    print("  per-asset coverage:")
+    cov = summary.get("coverage_by_asset", {})
+    if cov:
+        for asset in sorted(cov):
+            row = cov[asset]
+            kind = "derived" if row["is_derived"] else "direct"
+            print(f"    {asset:<10} src={row['source']:<13} {kind:<7} "
+                  f"rows={row['rows']:<6} "
+                  f"{row['start_date']} → {row['end_date']} "
+                  f"({row['coverage_days']}d)")
+    else:
+        print("    (none)")
+    warnings = summary.get("data_quality_warnings", []) or []
+    if warnings:
+        print(f"\n  {len(warnings)} data-quality warning(s):")
+        for w in warnings:
+            print(f"    - {w}")
+    written = summary.get("written", {}) or {}
+    print()
+    if "parquet" in written:
+        print(f"Saved → {written['parquet']}")
+    if "parquet_error" in written:
+        print(f"Parquet engine unavailable: {written['parquet_error']}")
+    if "csv" in written:
+        print(f"Saved → {written['csv']}")
     return 0
 
 
@@ -1188,6 +1236,14 @@ def build_parser() -> argparse.ArgumentParser:
               "Writes results/fx_crypto_source_audit.csv."),
     )
     sp.set_defaults(func=cmd_audit_fx_crypto_sources)
+
+    sp = sub.add_parser(
+        "build_fx_dataset",
+        help=("Build the v1 FX research dataset from ECB SDMX + LBMA "
+              "(public, no key). Writes data/fx/fx_daily_v1.parquet "
+              "(gitignored). No broker, no execution, no API keys."),
+    )
+    sp.set_defaults(func=cmd_build_fx_dataset)
 
     sp = sub.add_parser(
         "bot_status",
