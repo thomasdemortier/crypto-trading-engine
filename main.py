@@ -28,6 +28,7 @@ Usage:
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
     python main.py write_health_snapshot
+    python main.py audit_fx_crypto_sources
 """
 
 from __future__ import annotations
@@ -42,9 +43,9 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, health_snapshot, oos_audit, paper_trader,
-    performance, portfolio_audit, portfolio_research, research,
-    safety_lock, strategy_registry, system_health, utils,
+    dry_run_planner, fx_crypto_source_audit, health_snapshot, oos_audit,
+    paper_trader, performance, portfolio_audit, portfolio_research,
+    research, safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -554,6 +555,40 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
         print(sc.to_string(index=False))
+    return 0
+
+
+def cmd_audit_fx_crypto_sources(args: argparse.Namespace) -> int:
+    """Run the FX + crypto data source audit. No API keys, no broker
+    integration, no order placement. Probes only public, free
+    endpoints; failed probes degrade to FAIL / INCONCLUSIVE rather
+    than crashing. Writes results/fx_crypto_source_audit.csv
+    (gitignored)."""
+    utils.assert_paper_only()
+    df = fx_crypto_source_audit.run_audit(save=True)
+    summary = fx_crypto_source_audit.summarise(df)
+    print("\n=== FX + crypto data source audit ===")
+    print(f"  rows                : {summary['n']}")
+    print(f"  FX PASS             : {summary['fx_pass']}")
+    print(f"  FX WARNING          : {summary['fx_warning']}")
+    print(f"  FX FAIL             : {summary['fx_fail']}")
+    print(f"  FX INCONCLUSIVE     : {summary['fx_inconclusive']}")
+    print(f"  CRYPTO PASS         : {summary['crypto_pass']}")
+    print(f"  CRYPTO WARNING      : {summary['crypto_warning']}")
+    print(f"  CRYPTO FAIL         : {summary['crypto_fail']}")
+    print(f"  CRYPTO INCONCLUSIVE : {summary['crypto_inconclusive']}")
+    print()
+    print(f"  FX viable for research?     "
+          f"{'yes' if summary['fx_viable'] else 'no'}")
+    print(f"  Crypto viable for research? "
+          f"{'yes' if summary['crypto_viable'] else 'no'}")
+    cols = [c for c in ("market", "source", "asset", "field_type",
+                          "coverage_days", "decision_status",
+                          "requires_api_key", "notes")
+            if c in df.columns]
+    print()
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/fx_crypto_source_audit.csv")
     return 0
 
 
@@ -1145,6 +1180,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    sp = sub.add_parser(
+        "audit_fx_crypto_sources",
+        help=("Audit free / public Forex + crypto data sources for "
+              "future research. Read-only; no API keys; no broker. "
+              "Writes results/fx_crypto_source_audit.csv."),
+    )
+    sp.set_defaults(func=cmd_audit_fx_crypto_sources)
 
     sp = sub.add_parser(
         "bot_status",
