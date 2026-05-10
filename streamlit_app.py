@@ -23,7 +23,7 @@ import pandas as pd
 import streamlit as st
 
 from src import (
-    config, backtester, data_collector, paper_trader,
+    config, backtester, data_collector, health_snapshot, paper_trader,
     performance, plotting, portfolio_risk, research,
     research_dashboard, utils,
 )
@@ -1656,6 +1656,92 @@ with st.container(border=True):
             "It only describes risk concentration. Trading decisions "
             "are entirely outside its scope.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Health Timeline — read-only history of safety / system / strategy /
+# portfolio state. Snapshots are appended by the CLI command:
+#     python main.py write_health_snapshot
+# Output file is `results/health_snapshots.csv` and is gitignored.
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Health Timeline</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Read-only history of bot state — safety lock, system health, "
+        "strategy registry verdicts, and portfolio risk — with one "
+        "row per CLI invocation of "
+        "<code>python main.py write_health_snapshot</code>. The "
+        "snapshot file (<code>results/health_snapshots.csv</code>) is "
+        "gitignored. The dashboard never writes user data."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    snapshots_df, snapshots_warning = health_snapshot.load_health_snapshots()
+    summary = health_snapshot.summarize_health_timeline(snapshots_df)
+
+    if snapshots_df.empty:
+        st.warning(
+            "No snapshots yet. Run "
+            "`python main.py write_health_snapshot` to append the "
+            "first row.",
+        )
+        if snapshots_warning:
+            st.caption(snapshots_warning)
+    else:
+        cols_top = st.columns(4)
+        cols_top[0].metric("Snapshots", f"{summary['row_count']}")
+        cols_top[1].metric("Latest lock",
+                              str(summary["latest_safety_lock_status"]))
+        cols_top[2].metric("Latest sh_fail",
+                              f"{summary['latest_system_health_fail_count']}")
+        cols_top[3].metric("Latest strat PASS",
+                              f"{summary['latest_strategy_pass_count']}")
+        st.caption(
+            f"Latest snapshot: {summary['latest_snapshot_timestamp']}  ·  "
+            f"Latest portfolio risk: "
+            f"{summary['latest_portfolio_risk_classification']}",
+        )
+        if summary["warnings"]:
+            for w in summary["warnings"]:
+                st.warning(w)
+        # Show the most recent rows; users that want all rows can
+        # download the CSV.
+        cols = [c for c in (
+            "snapshot_timestamp", "safety_lock_status",
+            "system_health_pass_count", "system_health_warning_count",
+            "system_health_fail_count",
+            "strategy_total_count", "strategy_pass_count",
+            "strategy_fail_count", "strategy_inconclusive_count",
+            "portfolio_file_present", "portfolio_risk_classification",
+            "portfolio_recommendation", "notes",
+        ) if c in snapshots_df.columns]
+        st.dataframe(
+            snapshots_df[cols].tail(50),
+            use_container_width=True, hide_index=True, height=380,
+        )
+        st.caption(
+            "Showing the most recent 50 rows. The full file is at "
+            "`results/health_snapshots.csv` (gitignored).",
+        )
+
+    st.markdown("---")
+    st.markdown(
+        "**How to append a new snapshot** (read-only — no trading "
+        "surface):",
+    )
+    st.code("python main.py write_health_snapshot", language="bash")
+    st.caption(
+        "The dashboard intentionally does not expose a 'write snapshot' "
+        "button. Snapshots are written from the CLI only — the same "
+        "policy used for every other generated artefact in this "
+        "project.",
+    )
 
 
 # ---------------------------------------------------------------------------
