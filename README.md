@@ -229,6 +229,45 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Branch experiment: paid data vendor decision audit
+
+Branch `research/strategy-8-paid-data-decision-audit` is **vendor / data
+research only** — not a strategy.
+
+* No strategy was built.
+* No backtest was run.
+* No broker integration; no API keys; no order placement.
+* No Kraken connection.
+* Paper trading remains disabled.
+* Execution remains locked.
+* No paid data was downloaded; no scraping.
+
+The audit is a **manually maintained ledger** of crypto positioning
+data vendors (CoinGlass, CryptoQuant, Velo Data, Glassnode, Kaiko,
+Laevitas, Amberdata, Coinalyze, TokenTerminal, Santiment, TheTie). For
+each vendor it records: website, public docs/pricing URLs, whether
+pricing is visible, lowest visible plan price, what historical fields
+are claimed (OI, liquidations, long/short ratios, funding, basis,
+exchange flows), API access, granularity, and a decision status
+(`PASS_CANDIDATE`, `WATCHLIST`, `SALES_REQUIRED`, `DOCS_GATED`,
+`INCONCLUSIVE`, `FAIL`).
+
+Purpose: decide whether buying data is justified before opening
+another strategy branch — three long-only allocators in a row failed
+on the same pattern (tight drawdown, beats placebo, loses to BTC),
+and the public-data audit found OI / liquidations / long-short ratios
+are all `FAIL` on free endpoints.
+
+Run it locally:
+
+```bash
+python main.py audit_paid_data_vendors
+```
+
+The output CSV at `results/paid_data_vendor_audit.csv` is generated,
+not tracked. The honest verdict and the recommended shortlist are in
+[`reports/paid_data_vendor_decision_report.md`](reports/paid_data_vendor_decision_report.md).
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.

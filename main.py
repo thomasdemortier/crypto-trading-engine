@@ -27,6 +27,7 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py audit_paid_data_vendors
 """
 
 from __future__ import annotations
@@ -41,9 +42,9 @@ import pandas as pd
 from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
-    dry_run_planner, oos_audit, paper_trader, performance,
-    portfolio_audit, portfolio_research, research, safety_lock,
-    strategy_registry, system_health, utils,
+    dry_run_planner, oos_audit, paid_data_vendor_audit, paper_trader,
+    performance, portfolio_audit, portfolio_research, research,
+    safety_lock, strategy_registry, system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -553,6 +554,33 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
         print(sc.to_string(index=False))
+    return 0
+
+
+def cmd_audit_paid_data_vendors(args: argparse.Namespace) -> int:
+    """Run the paid-data-vendor decision audit. Manually maintained
+    ledger; no API keys, no scraping, no network calls. Writes
+    `results/paid_data_vendor_audit.csv`."""
+    utils.assert_paper_only()
+    df = paid_data_vendor_audit.run_audit(save=True)
+    summary = paid_data_vendor_audit.summarise(df)
+    print("\n=== paid data vendor audit ===")
+    print(f"  vendors reviewed   : {summary['n']}")
+    print(f"  PASS_CANDIDATE     : {summary['pass_candidates']}")
+    print(f"  WATCHLIST          : {summary['watchlist']}")
+    print(f"  SALES_REQUIRED     : {summary['sales_required']}")
+    print(f"  DOCS_GATED         : {summary['docs_gated']}")
+    print(f"  INCONCLUSIVE       : {summary['inconclusive']}")
+    print(f"  FAIL               : {summary['fail']}")
+    print(f"  top recommendation : "
+          f"{summary['top'] or '(no PASS_CANDIDATE — see report)'}")
+    cols = [c for c in ("vendor", "decision_status",
+                          "lowest_visible_plan_usd", "confidence",
+                          "recommended_next_action")
+            if c in df.columns]
+    print()
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/paid_data_vendor_audit.csv")
     return 0
 
 
@@ -1119,6 +1147,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    sp = sub.add_parser(
+        "audit_paid_data_vendors",
+        help=("Run the paid-data-vendor decision audit. Manually "
+              "maintained ledger; no API keys, no scraping, no network "
+              "calls. Writes results/paid_data_vendor_audit.csv."),
+    )
+    sp.set_defaults(func=cmd_audit_paid_data_vendors)
 
     sp = sub.add_parser(
         "bot_status",
