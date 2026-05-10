@@ -27,6 +27,12 @@ Usage:
     python main.py portfolio_placebo
     python main.py portfolio_scorecard
     python main.py research_all_portfolio
+    python main.py relative_value_signals
+    python main.py relative_value_backtest
+    python main.py relative_value_walk_forward
+    python main.py relative_value_placebo
+    python main.py relative_value_scorecard
+    python main.py research_all_relative_value
 """
 
 from __future__ import annotations
@@ -42,8 +48,9 @@ from src import (
     alert_engine, alert_history, backtester, bot_status, bot_status_history,
     config, crypto_regime_signals, data_collector, decision_journal,
     dry_run_planner, oos_audit, paper_trader, performance,
-    portfolio_audit, portfolio_research, research, safety_lock,
-    strategy_registry, system_health, utils,
+    portfolio_audit, portfolio_research, relative_value_research,
+    relative_value_signals, research, safety_lock, strategy_registry,
+    system_health, utils,
 )
 
 logger = utils.get_logger("cte.cli")
@@ -552,6 +559,125 @@ def cmd_research_all_portfolio(args: argparse.Namespace) -> int:
     sc = out.get("scorecard")
     if sc is not None and not sc.empty:
         print("\n=== portfolio scorecard ===")
+        print(sc.to_string(index=False))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Strategy 7: BTC/ETH relative-value allocator (research-only)
+# ---------------------------------------------------------------------------
+def cmd_relative_value_signals(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = relative_value_signals.compute_signals(
+        timeframe=args.timeframe, save=True,
+    )
+    if df.empty:
+        print("relative_value_signals: no rows produced.")
+        return 1
+    dist = relative_value_signals.regime_distribution(df)
+    print(f"\nrelative_value_signals: {len(df)} rows.")
+    print(f"  span: {df['datetime'].iloc[0]} -> {df['datetime'].iloc[-1]}")
+    print(f"  regime mix: "
+          f"{ {k: round(v, 3) for k, v in dist.items()} }")
+    print("\nSaved → results/relative_value_signals.csv")
+    return 0
+
+
+def cmd_relative_value_backtest(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = relative_value_research.run_relative_value_backtest(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+    )
+    if not out.get("ok"):
+        print(f"relative_value_backtest: {out.get('reason')}")
+        return 1
+    print("\n=== relative-value vs benchmarks (full window) ===")
+    _print_portfolio_metrics_dict(
+        "relative_value_btc_eth_allocator", out["metrics"],
+    )
+    for name, m in out["bench_metrics"].items():
+        _print_portfolio_metrics_dict(name, m)
+    print("\nSaved → results/relative_value_*.csv")
+    return 0
+
+
+def cmd_relative_value_walk_forward(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = relative_value_research.relative_value_walk_forward(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, max_windows=args.max_windows,
+    )
+    if df.empty:
+        print("relative_value_walk_forward: no rows produced.")
+        return 1
+    cols = [c for c in ("window", "oos_start_iso", "oos_end_iso",
+            "oos_return_pct", "btc_oos_return_pct", "eth_oos_return_pct",
+            "basket_oos_return_pct", "simple_oos_return_pct",
+            "beats_btc", "beats_eth", "beats_basket",
+            "beats_simple_momentum", "n_rebalances")
+            if c in df.columns]
+    print(df[cols].to_string(index=False))
+    print(f"\nSaved → results/relative_value_walk_forward.csv "
+          f"({len(df)} windows).")
+    return 0
+
+
+def cmd_relative_value_placebo(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = relative_value_research.relative_value_placebo(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        seeds=tuple(range(args.n_seeds)),
+    )
+    if df.empty:
+        print("relative_value_placebo: no rows produced.")
+        return 1
+    summary = df.iloc[0].to_dict()
+    print("\n=== relative-value placebo summary ===")
+    for k in ("strategy_return_pct", "placebo_median_return_pct",
+              "strategy_max_drawdown_pct", "placebo_median_drawdown_pct",
+              "strategy_beats_median_return",
+              "strategy_beats_median_drawdown"):
+        if k in summary:
+            print(f"  {k:<40} {summary[k]}")
+    print(f"\nSaved → results/relative_value_placebo.csv "
+          f"({args.n_seeds} seeds).")
+    return 0
+
+
+def cmd_relative_value_scorecard(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    df = relative_value_research.relative_value_scorecard()
+    if df.empty:
+        print("relative_value_scorecard: no rows.")
+        return 1
+    row = df.iloc[0].to_dict()
+    print("\n=== relative-value scorecard ===")
+    for k in ("strategy_name", "n_windows", "verdict",
+              "avg_oos_return_pct", "avg_oos_drawdown_pct",
+              "pct_windows_beat_btc", "pct_windows_beat_eth",
+              "pct_windows_beat_basket",
+              "pct_windows_beat_simple_momentum",
+              "stability_score_pct", "total_rebalances",
+              "beats_placebo_median", "checks_passed",
+              "checks_total", "reason"):
+        if k in row:
+            print(f"  {k:<35} {row[k]}")
+    print(f"\nSaved → results/relative_value_scorecard.csv")
+    return 0
+
+
+def cmd_research_all_relative_value(args: argparse.Namespace) -> int:
+    utils.assert_paper_only()
+    out = relative_value_research.run_all_relative_value(
+        universe=tuple(args.assets), timeframe=args.timeframe,
+        in_sample_days=args.in_sample_days, oos_days=args.oos_days,
+        step_days=args.step_days, seeds=tuple(range(args.n_seeds)),
+        max_windows=args.max_windows,
+    )
+    sc = out.get("scorecard")
+    if sc is not None and not sc.empty:
+        print("\n=== relative-value scorecard ===")
         print(sc.to_string(index=False))
     return 0
 
@@ -1119,6 +1245,74 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--step-days", type=int, default=90, dest="step_days")
     sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
     sp.set_defaults(func=cmd_research_all_portfolio)
+
+    # ----- Strategy 7: BTC/ETH relative-value allocator --------------------
+    rv_default_assets = ["BTC/USDT", "ETH/USDT"]
+    sp = sub.add_parser(
+        "relative_value_signals",
+        help=("Build the BTC/ETH relative-value signal frame "
+              "(daily, lookahead-free)."),
+    )
+    sp.add_argument("--timeframe", default="1d")
+    sp.set_defaults(func=cmd_relative_value_signals)
+
+    sp = sub.add_parser(
+        "relative_value_backtest",
+        help=("Single-window backtest of the BTC/ETH relative-value "
+              "allocator vs benchmarks."),
+    )
+    sp.add_argument("--assets", nargs="+", default=rv_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.set_defaults(func=cmd_relative_value_backtest)
+
+    sp = sub.add_parser(
+        "relative_value_walk_forward",
+        help=("Walk-forward the BTC/ETH relative-value allocator "
+              "(14 OOS windows by default)."),
+    )
+    sp.add_argument("--assets", nargs="+", default=rv_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--max-windows", type=int, default=14,
+                    dest="max_windows")
+    sp.set_defaults(func=cmd_relative_value_walk_forward)
+
+    sp = sub.add_parser(
+        "relative_value_placebo",
+        help=("Compare BTC/ETH relative-value allocator vs "
+              "random-bucket placebo across N seeds."),
+    )
+    sp.add_argument("--assets", nargs="+", default=rv_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.set_defaults(func=cmd_relative_value_placebo)
+
+    sp = sub.add_parser(
+        "relative_value_scorecard",
+        help=("Build the BTC/ETH relative-value scorecard from saved "
+              "CSVs."),
+    )
+    sp.set_defaults(func=cmd_relative_value_scorecard)
+
+    sp = sub.add_parser(
+        "research_all_relative_value",
+        help=("Run the BTC/ETH relative-value allocator end to end: "
+              "signals + backtest + walk-forward + placebo + "
+              "scorecard."),
+    )
+    sp.add_argument("--assets", nargs="+", default=rv_default_assets)
+    sp.add_argument("--timeframe", default="1d")
+    sp.add_argument("--in-sample-days", type=int, default=180,
+                    dest="in_sample_days")
+    sp.add_argument("--oos-days", type=int, default=90, dest="oos_days")
+    sp.add_argument("--step-days", type=int, default=90, dest="step_days")
+    sp.add_argument("--n-seeds", type=int, default=20, dest="n_seeds")
+    sp.add_argument("--max-windows", type=int, default=14,
+                    dest="max_windows")
+    sp.set_defaults(func=cmd_research_all_relative_value)
 
     sp = sub.add_parser(
         "bot_status",

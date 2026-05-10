@@ -100,6 +100,14 @@ _FAMILIES: List[_FamilyMeta] = [
         headline=("Fear & Greed overlay on the prior-best vol-target "
                    "allocator"),
     ),
+    _FamilyMeta(
+        family="relative_value_btc_eth",
+        branch="research/strategy-7-relative-value-btc-eth",
+        report_path="reports/relative_value_btc_eth_report.md",
+        scorecard_files=("relative_value_scorecard.csv",),
+        headline=("Long-only BTC/ETH relative-value rotation driven by "
+                   "the ETH/BTC ratio + per-asset 200d MA"),
+    ),
 ]
 
 

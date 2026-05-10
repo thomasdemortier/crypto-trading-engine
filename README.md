@@ -229,6 +229,33 @@ upstream Kronos repo are never committed.
   `largest_gap_bars`, `coverage_days`, `enough_for_walk_forward`. Inspect
   it before trusting any walk-forward verdict.
 
+## Branch experiment: BTC/ETH relative-value allocator
+
+Branch `research/strategy-7-relative-value-btc-eth` is **research only**.
+
+* No strategy is enabled for trading.
+* No broker integration; no API keys; no order placement.
+* No Kraken connection.
+* Paper trading remains disabled.
+* Execution remains locked.
+* No shorting and no leverage — long-only rotation between BTC, ETH,
+  a 50/50 BTC+ETH basket, and cash.
+
+The strategy reads the local BTC/USDT and ETH/USDT 1d cache, builds
+the ETH/BTC ratio with backward-only 30/90/200d windows, and assigns
+one of six regime states per spot bar
+(`eth_leadership`, `btc_leadership`, `defensive`, `unstable_rotation`,
+`neutral`, `unknown`). Each state maps to a fixed long-only weight
+plan; nothing is tuned after seeing results. Honest verdict and the
+recommended next step are in
+[`reports/relative_value_btc_eth_report.md`](reports/relative_value_btc_eth_report.md).
+
+Run it locally:
+
+```bash
+python main.py research_all_relative_value
+```
+
 ## Safety reminders
 
 * `LIVE_TRADING_ENABLED` must remain `False` in v1.

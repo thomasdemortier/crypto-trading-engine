@@ -3165,6 +3165,195 @@ with st.expander("Debug & audit", expanded=False):
 
 
 # ---------------------------------------------------------------------------
+# Strategy 7: BTC/ETH relative-value allocator (research-only)
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "BTC/ETH relative-value allocator (research)</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Long-only BTC vs ETH rotation driven by the ETH/BTC ratio "
+        "trend, z-score, and per-asset 200d MA. Run "
+        "<code>python main.py research_all_relative_value</code> to "
+        "populate. Research only — execution remains locked.</div>",
+        unsafe_allow_html=True,
+    )
+
+    rv_tabs = st.tabs([
+        "Signals / regimes", "Current state", "Equity vs benchmarks",
+        "Walk-forward", "Placebo", "Scorecard", "Diagnostics",
+    ])
+
+    rv_sig = _research_csv("relative_value_signals.csv")
+    rv_cmp = _research_csv("relative_value_comparison.csv")
+    rv_wf = _research_csv("relative_value_walk_forward.csv")
+    rv_plac = _research_csv("relative_value_placebo.csv")
+    rv_sc = _research_csv("relative_value_scorecard.csv")
+    rv_diag = _research_csv("relative_value_diagnostics.csv")
+
+    with rv_tabs[0]:
+        if rv_sig.empty:
+            st.info("No signals — run `relative_value_signals`.")
+        else:
+            cols = [c for c in ("datetime", "btc_close", "eth_close",
+                                "eth_btc_ratio", "ratio_30d_return",
+                                "ratio_90d_return", "ratio_above_ma_200",
+                                "ratio_z90", "btc_above_200dma",
+                                "eth_above_200dma", "regime_state")
+                    if c in rv_sig.columns]
+            st.dataframe(rv_sig[cols].tail(60),
+                          use_container_width=True,
+                          hide_index=True, height=420)
+            rg = (rv_sig["regime_state"]
+                    .value_counts(normalize=True)
+                    .rename_axis("regime").reset_index(name="pct"))
+            st.bar_chart(rg.set_index("regime"))
+
+    with rv_tabs[1]:
+        if rv_sig.empty:
+            st.info("No signals yet.")
+        else:
+            latest = rv_sig.sort_values("timestamp").tail(1)
+            cols = [c for c in ("datetime", "btc_close", "eth_close",
+                                "eth_btc_ratio", "regime_state",
+                                "ratio_30d_return", "ratio_90d_return",
+                                "ratio_above_ma_200", "ratio_z90",
+                                "btc_above_200dma", "eth_above_200dma")
+                    if c in latest.columns]
+            st.dataframe(latest[cols], use_container_width=True,
+                          hide_index=True)
+
+    with rv_tabs[2]:
+        if rv_cmp.empty:
+            st.info("No comparison CSV — run "
+                    "`relative_value_backtest`.")
+        else:
+            cols = [c for c in ("strategy", "total_return_pct",
+                                "max_drawdown_pct", "sharpe_ratio",
+                                "exposure_time_pct") if c in rv_cmp.columns]
+            st.dataframe(rv_cmp[cols], use_container_width=True,
+                          hide_index=True)
+            st.download_button(
+                "Download relative_value_comparison.csv",
+                _df_to_csv_bytes(rv_cmp),
+                file_name="relative_value_comparison.csv",
+                mime="text/csv", key="dl_rv_cmp",
+            )
+
+    with rv_tabs[3]:
+        if rv_wf.empty:
+            st.info("No walk-forward yet.")
+        else:
+            cols = [c for c in ("window", "oos_start_iso", "oos_end_iso",
+                                "oos_return_pct", "btc_oos_return_pct",
+                                "eth_oos_return_pct",
+                                "basket_oos_return_pct",
+                                "simple_oos_return_pct",
+                                "beats_btc", "beats_eth", "beats_basket",
+                                "beats_simple_momentum",
+                                "n_rebalances", "oos_max_drawdown_pct")
+                    if c in rv_wf.columns]
+            st.dataframe(rv_wf[cols], use_container_width=True,
+                          hide_index=True, height=420)
+            st.download_button(
+                "Download relative_value_walk_forward.csv",
+                _df_to_csv_bytes(rv_wf),
+                file_name="relative_value_walk_forward.csv",
+                mime="text/csv", key="dl_rv_wf",
+            )
+
+    with rv_tabs[4]:
+        if rv_plac.empty:
+            st.info("No placebo yet.")
+        else:
+            summary = rv_plac.iloc[0].to_dict()
+            cols_l = st.columns(4)
+            cols_l[0].metric("Strategy return",
+                              _fmt_pct(summary.get("strategy_return_pct")))
+            cols_l[1].metric("Placebo median return",
+                              _fmt_pct(summary.get(
+                                  "placebo_median_return_pct")))
+            cols_l[2].metric("Strategy DD",
+                              _fmt_pct(summary.get(
+                                  "strategy_max_drawdown_pct")))
+            cols_l[3].metric("Placebo median DD",
+                              _fmt_pct(summary.get(
+                                  "placebo_median_drawdown_pct")))
+            seeds = (rv_plac[rv_plac["strategy"] == "placebo_seed_runs"]
+                       if "strategy" in rv_plac.columns else rv_plac)
+            st.dataframe(seeds, use_container_width=True,
+                          hide_index=True, height=320)
+
+    with rv_tabs[5]:
+        if rv_sc.empty:
+            st.info("No scorecard — run "
+                    "`research_all_relative_value` first.")
+        else:
+            row = rv_sc.iloc[0].to_dict()
+            verdict = str(row.get("verdict", "UNKNOWN")).upper()
+            color = {
+                "PASS": "#1f9d55", "WATCHLIST": "#f6993f",
+                "FAIL": "#e3342f", "INCONCLUSIVE": "#6b7280",
+            }.get(verdict, "#6b7280")
+            st.markdown(
+                f"<div style='padding:0.6rem 1rem; border-radius:8px; "
+                f"background:{color}22; border:1px solid {color}; "
+                f"color:{color}; font-weight:700; display:inline-block;'>"
+                f"{verdict}</div>",
+                unsafe_allow_html=True,
+            )
+            cols_t = st.columns(4)
+            cols_t[0].metric("Checks passed",
+                              f"{int(row.get('checks_passed', 0))}/"
+                              f"{int(row.get('checks_total', 0))}")
+            cols_t[1].metric("OOS beat BTC",
+                              _fmt_pct(row.get("pct_windows_beat_btc"),
+                                         signed=False))
+            cols_t[2].metric("OOS beat ETH",
+                              _fmt_pct(row.get("pct_windows_beat_eth"),
+                                         signed=False))
+            cols_t[3].metric("Stability",
+                              _fmt_pct(row.get("stability_score_pct"),
+                                         signed=False))
+            cols_b = st.columns(4)
+            cols_b[0].metric("Full return",
+                              _fmt_pct(row.get("strategy_full_return_pct")))
+            cols_b[1].metric("Full DD",
+                              _fmt_pct(row.get("strategy_full_drawdown_pct")))
+            cols_b[2].metric("BTC DD",
+                              _fmt_pct(row.get("btc_full_drawdown_pct")))
+            cols_b[3].metric("Rebalances",
+                              f"{int(row.get('total_rebalances', 0))}")
+            if verdict == "FAIL":
+                st.error("Strategy failed the locked scorecard. Reason: "
+                          + str(row.get("reason", "")))
+            elif verdict == "INCONCLUSIVE":
+                st.warning("Inconclusive: data coverage or rebalance "
+                           "count below the bar. "
+                           + str(row.get("reason", "")))
+            elif verdict == "PASS":
+                st.success("PASS — independent review required before "
+                            "any trading.")
+
+    with rv_tabs[6]:
+        if rv_diag.empty:
+            st.info("No diagnostics yet.")
+        else:
+            cols = [c for c in ("asof_ts_ms", "regime_state",
+                                "eth_btc_ratio", "ratio_30d_return",
+                                "ratio_90d_return", "ratio_above_ma_200",
+                                "ratio_z90", "btc_above_200dma",
+                                "eth_above_200dma", "btc_weight",
+                                "eth_weight") if c in rv_diag.columns]
+            st.dataframe(rv_diag[cols].tail(60),
+                          use_container_width=True,
+                          hide_index=True, height=420)
+
+
+# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 st.markdown(
