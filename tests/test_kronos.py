@@ -40,7 +40,7 @@ def _synthetic_csv(symbol: str, timeframe: str, n: int = 600,
     vol = rng.uniform(100, 1_000, n)
     ts = pd.date_range("2023-01-01", periods=n, freq="4h", tz="UTC")
     df = pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts, "open": open_, "high": high, "low": low,
         "close": close, "volume": vol,
     })
@@ -105,7 +105,7 @@ def _candle_frame(n: int = 100) -> pd.DataFrame:
     rng = np.random.default_rng(0)
     close = 100 + np.cumsum(rng.normal(0, 1, n))
     return pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts,
         "open": close, "high": close + 1, "low": close - 1,
         "close": close,

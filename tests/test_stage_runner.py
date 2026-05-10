@@ -48,7 +48,7 @@ def _seed_btc_csv(timeframe: str = "4h", n: int = 600) -> None:
     vol = rng.uniform(100, 1_000, n)
     ts = pd.date_range("2023-01-01", periods=n, freq=f"{timeframe}", tz="UTC")
     df = pd.DataFrame({
-        "timestamp": (ts.astype("int64") // 10**6).astype("int64"),
+        "timestamp": (ts.astype("datetime64[ns, UTC]").astype("int64") // 10**6).astype("int64"),
         "datetime": ts, "open": open_, "high": high, "low": low,
         "close": close, "volume": vol,
     })
