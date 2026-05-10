@@ -27,6 +27,10 @@ logs/*.csv
 results/*.csv
 results/*.json
 
+# Personal portfolio holdings — NEVER commit user financial data
+data/portfolio_holdings.csv
+data/portfolio_holdings_*.csv
+
 # But keep folder structure
 !data/raw/.gitkeep
 !data/processed/.gitkeep

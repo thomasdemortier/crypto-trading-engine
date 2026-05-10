@@ -24,7 +24,8 @@ import streamlit as st
 
 from src import (
     config, backtester, data_collector, paper_trader,
-    performance, plotting, research, research_dashboard, utils,
+    performance, plotting, portfolio_risk, research,
+    research_dashboard, utils,
 )
 
 
@@ -1459,6 +1460,201 @@ with st.container(border=True):
             "This dashboard does not expose any execution surface. "
             "Paper trading, live trading, Kraken connection, API key "
             "entry, and order placement are all out of scope.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Risk — read-only portfolio exposure / scenario / risk dashboard
+# backed by `data/portfolio_holdings.csv` (gitignored, user-supplied).
+# Sits below the Research Dashboard. No execution surface.
+# ---------------------------------------------------------------------------
+with st.container(border=True):
+    st.markdown(
+        "<div class='section-h'><span class='dot'></span>"
+        "Portfolio Risk</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='section-sub'>"
+        "Read-only review of portfolio exposure, drawdown scenarios, "
+        "and risk classification. Loads from a local "
+        "<code>data/portfolio_holdings.csv</code> file (gitignored — "
+        "must not be committed). No trading. No broker. No order "
+        "placement."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    pr_state = portfolio_risk.get_portfolio_risk_dashboard_state()
+
+    pr_tabs = st.tabs([
+        "Status", "Positions", "Summary",
+        "Drawdown scenarios", "BTC baseline", "Risk + recommendation",
+    ])
+
+    # ---------------- Status -----------------------------------------
+    with pr_tabs[0]:
+        schema = pr_state["schema_status"]
+        cols_top = st.columns(4)
+        cols_top[0].metric("Schema OK",
+                              "yes" if schema.ok else "no")
+        cols_top[1].metric("Rows", f"{schema.n_rows}")
+        cols_top[2].metric("Cols", f"{schema.n_cols}")
+        cols_top[3].metric("Risk class",
+                              pr_state["risk_classification"])
+        if pr_state["warnings"]:
+            for w in pr_state["warnings"]:
+                st.warning(w)
+        if not schema.ok and schema.missing_columns:
+            st.error("Missing columns: "
+                      + ", ".join(schema.missing_columns))
+        if schema.extra_columns:
+            st.caption("Extra columns (ignored): "
+                        + ", ".join(schema.extra_columns))
+        st.caption(
+            "Required columns: "
+            + ", ".join(portfolio_risk.REQUIRED_COLUMNS),
+        )
+
+    # ---------------- Positions --------------------------------------
+    with pr_tabs[1]:
+        holdings = pr_state["holdings"]
+        if holdings.empty:
+            st.info(
+                "No portfolio file found. Add a local "
+                "`data/portfolio_holdings.csv` using the template in "
+                "`docs/portfolio_risk_dashboard.md`. The file is "
+                "gitignored and must not be committed.",
+            )
+        else:
+            cols = [c for c in (
+                "asset", "quantity", "average_cost", "current_price",
+                "currency", "position_value", "cost_basis",
+                "unrealized_pnl", "unrealized_pnl_percent",
+                "portfolio_weight", "price_source", "notes",
+            ) if c in holdings.columns]
+            st.dataframe(holdings[cols], use_container_width=True,
+                          hide_index=True, height=380)
+
+    # ---------------- Summary ----------------------------------------
+    with pr_tabs[2]:
+        s = pr_state["summary"]
+        if not s or s.get("total_market_value", 0.0) <= 0:
+            st.info("No portfolio summary available — load a portfolio "
+                    "file first.")
+        else:
+            cols_a = st.columns(4)
+            cols_a[0].metric("Total market value",
+                                _fmt_money(s["total_market_value"]))
+            cols_a[1].metric("Total cost basis",
+                                _fmt_money(s["total_cost_basis"]))
+            cols_a[2].metric("Unrealized PnL",
+                                _fmt_money(s["total_unrealized_pnl"]))
+            cols_a[3].metric("Unrealized PnL %",
+                                _fmt_pct(s["total_unrealized_pnl_percent"]))
+            cols_b = st.columns(4)
+            cols_b[0].metric("Largest position",
+                                str(s.get("largest_position") or "—"))
+            cols_b[1].metric("Largest weight",
+                                _fmt_pct(s["largest_position_weight"]
+                                            * 100.0, signed=False))
+            cols_b[2].metric("Crypto exposure",
+                                _fmt_pct(s["crypto_exposure"] * 100.0,
+                                            signed=False))
+            cols_b[3].metric("Stablecoin exposure",
+                                _fmt_pct(s["stablecoin_exposure"]
+                                            * 100.0, signed=False))
+            cols_c = st.columns(2)
+            cols_c[0].metric("Asset count", f"{s['asset_count']}")
+            cols_c[1].metric("Cash holdings",
+                                f"{s['cash_count']}")
+
+            if s["largest_position_weight"] > 0.60:
+                st.warning(
+                    "Concentration warning: the largest position is "
+                    f"{s['largest_position_weight']*100:.1f} % of "
+                    "the portfolio. Single-asset risk is elevated.",
+                )
+
+    # ---------------- Drawdown scenarios -----------------------------
+    with pr_tabs[3]:
+        scenarios = pr_state["scenarios"]
+        if scenarios.empty:
+            st.info("No scenarios available — load a portfolio file.")
+        else:
+            cols = [c for c in (
+                "scenario", "shock_pct", "new_portfolio_value",
+                "portfolio_loss", "portfolio_loss_percent",
+                "largest_loss_asset",
+            ) if c in scenarios.columns]
+            st.dataframe(scenarios[cols], use_container_width=True,
+                          hide_index=True)
+            st.caption(
+                "Shocks apply to crypto positions only; stablecoins "
+                "and cash are held flat. The 'largest_loss_asset' "
+                "column shows which crypto position contributes the "
+                "biggest dollar loss under each shock.",
+            )
+
+    # ---------------- BTC baseline -----------------------------------
+    with pr_tabs[4]:
+        bb = pr_state["btc_baseline"]
+        cols_b = st.columns(3)
+        cols_b[0].metric("BTC present",
+                            "yes" if bb.get("btc_present") else "no")
+        cols_b[1].metric("BTC weight",
+                            _fmt_pct(bb.get("btc_weight", 0.0) * 100.0,
+                                       signed=False))
+        cols_b[2].metric("Non-BTC weight",
+                            _fmt_pct(bb.get("non_btc_weight", 0.0)
+                                       * 100.0, signed=False))
+        st.caption(
+            f"**Concentration vs baseline:** "
+            f"{bb.get('concentration_vs_baseline', 'n/a')}",
+        )
+        if bb.get("warning"):
+            st.warning(bb["warning"])
+
+    # ---------------- Risk + recommendation --------------------------
+    with pr_tabs[5]:
+        risk = pr_state["risk_classification"]
+        rec = pr_state["recommendation"]
+        risk_color = {
+            "LOW": "#1f9d55", "MODERATE": "#f6993f",
+            "HIGH": "#e3342f", "EXTREME": "#9b1c1c",
+            "UNKNOWN": "#6b7280",
+        }.get(risk, "#6b7280")
+        st.markdown(
+            f"<div style='padding:0.6rem 1rem; border-radius:8px; "
+            f"background:{risk_color}22; border:1px solid {risk_color}; "
+            f"color:{risk_color}; font-weight:700; "
+            f"display:inline-block;'>"
+            f"Risk class: {risk}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"**Recommendation category:** {rec.get('category')}  "
+            f"\n**Recommended action:** {rec.get('action')}",
+        )
+        st.caption(
+            "Recommendation language is locked. The dashboard NEVER "
+            "tells the user to buy, sell, open a position, place an "
+            "order, or connect a broker. Only one of: "
+            f"{list(portfolio_risk.RECOMMENDATION_PHRASES)}",
+        )
+        st.markdown("---")
+        st.markdown("**Safe next actions** (read-only):")
+        st.markdown("- Update `data/portfolio_holdings.csv` locally "
+                      "with current quantities + prices")
+        st.markdown("- Re-run this dashboard after editing the file")
+        st.markdown("- Review the drawdown scenarios above")
+        st.markdown("- Compare to the BTC baseline tab")
+        st.markdown("---")
+        st.error(
+            "This dashboard does NOT recommend buying, selling, "
+            "opening positions, placing orders, or connecting brokers. "
+            "It only describes risk concentration. Trading decisions "
+            "are entirely outside its scope.",
         )
 
 
